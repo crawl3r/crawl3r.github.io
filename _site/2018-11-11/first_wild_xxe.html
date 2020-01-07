@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+
+  <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Begin Jekyll SEO tag v2.5.0 -->
+<title>My first XXE in the wild | Crawl3r</title>
+<meta name="generator" content="Jekyll v3.7.4" />
+<meta property="og:title" content="My first XXE in the wild" />
+<meta name="author" content="Crawl3r" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="Disclaimer: This information was found during a pen-test on a client. For that reason, my explanations and examples will be very vague and contain no sensitive information relative to the target but it will be kept close to the actual finding. If you’re not sure what XXE is, please refer to OWASP’s wiki page. Initial finding Whilst enumerating the target web app, various features were found that allowed authenticated users to upload their own data. An example of an XML template was obtainable via a download and presented the correct method of including custom data that the application could parse. As soon as I saw that XML was usable I started crafting small payloads just to test for XXE vulnerabilities. I initially tried to read a file with a name that definitely wouldn’t exist to see if I could leak any information about the target environment. The redacted XML file I used was: &lt;?xml version=&quot;1.0&quot; encoding=&quot;ISO-8859-1&quot;?&gt; &lt;!DOCTYPE file [ &lt;!ELEMENT file ANY &gt; &lt;!ENTITY xxe SYSTEM &quot;file://_definitely_doesnt_exist_asdfasdf&quot; &gt; ]&gt; &lt;root&gt; &lt;name&gt;&amp;xxe;&lt;/name&gt; [Redacted fields] &lt;/root&gt; After uploading the crafted file, an error was printed within a field that would have been populated by the XML node field, proving my XXE payload had triggered and was returning data. The error was a ‘File Not Found’ error and included the whole file-path to the current location. Ultimately this information leak provided me with the following information: I was targeting a Linux environment I had an XXE vulnerability to leverage I effectively had RCE With these 3 points I was able to start leaking sensitive files such as /etc/passwd, configuration files and source code that would only normally be utilised by the server to help potentially find other weaknesses and issues within the target. What came next? I crafted a short python script that performed the XXE vulnerable request over and over again. Each iteration attempted to obtain a different file from a dictionary I provided. Ultimately, I had created a brute force tool, similar to “dirbuster”, but specifically for enumerating the internal files and directories of my target. Using this quick tool lead to leaking the AWS secret keys… game over \o/ The use of this tool probably wasn’t the most efficient approach, but it worked in this case. However, this accompanied by a ‘Billion Laughs’ attack lead to some issues for the client’s environment. Great news for the report though ;)" />
+<meta property="og:description" content="Disclaimer: This information was found during a pen-test on a client. For that reason, my explanations and examples will be very vague and contain no sensitive information relative to the target but it will be kept close to the actual finding. If you’re not sure what XXE is, please refer to OWASP’s wiki page. Initial finding Whilst enumerating the target web app, various features were found that allowed authenticated users to upload their own data. An example of an XML template was obtainable via a download and presented the correct method of including custom data that the application could parse. As soon as I saw that XML was usable I started crafting small payloads just to test for XXE vulnerabilities. I initially tried to read a file with a name that definitely wouldn’t exist to see if I could leak any information about the target environment. The redacted XML file I used was: &lt;?xml version=&quot;1.0&quot; encoding=&quot;ISO-8859-1&quot;?&gt; &lt;!DOCTYPE file [ &lt;!ELEMENT file ANY &gt; &lt;!ENTITY xxe SYSTEM &quot;file://_definitely_doesnt_exist_asdfasdf&quot; &gt; ]&gt; &lt;root&gt; &lt;name&gt;&amp;xxe;&lt;/name&gt; [Redacted fields] &lt;/root&gt; After uploading the crafted file, an error was printed within a field that would have been populated by the XML node field, proving my XXE payload had triggered and was returning data. The error was a ‘File Not Found’ error and included the whole file-path to the current location. Ultimately this information leak provided me with the following information: I was targeting a Linux environment I had an XXE vulnerability to leverage I effectively had RCE With these 3 points I was able to start leaking sensitive files such as /etc/passwd, configuration files and source code that would only normally be utilised by the server to help potentially find other weaknesses and issues within the target. What came next? I crafted a short python script that performed the XXE vulnerable request over and over again. Each iteration attempted to obtain a different file from a dictionary I provided. Ultimately, I had created a brute force tool, similar to “dirbuster”, but specifically for enumerating the internal files and directories of my target. Using this quick tool lead to leaking the AWS secret keys… game over \o/ The use of this tool probably wasn’t the most efficient approach, but it worked in this case. However, this accompanied by a ‘Billion Laughs’ attack lead to some issues for the client’s environment. Great news for the report though ;)" />
+<link rel="canonical" href="http://localhost:4000/2018-11-11/first_wild_xxe" />
+<meta property="og:url" content="http://localhost:4000/2018-11-11/first_wild_xxe" />
+<meta property="og:site_name" content="Crawl3r" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2018-11-11T00:00:00+00:00" />
+<script type="application/ld+json">
+{"description":"Disclaimer: This information was found during a pen-test on a client. For that reason, my explanations and examples will be very vague and contain no sensitive information relative to the target but it will be kept close to the actual finding. If you’re not sure what XXE is, please refer to OWASP’s wiki page. Initial finding Whilst enumerating the target web app, various features were found that allowed authenticated users to upload their own data. An example of an XML template was obtainable via a download and presented the correct method of including custom data that the application could parse. As soon as I saw that XML was usable I started crafting small payloads just to test for XXE vulnerabilities. I initially tried to read a file with a name that definitely wouldn’t exist to see if I could leak any information about the target environment. The redacted XML file I used was: &lt;?xml version=&quot;1.0&quot; encoding=&quot;ISO-8859-1&quot;?&gt; &lt;!DOCTYPE file [ &lt;!ELEMENT file ANY &gt; &lt;!ENTITY xxe SYSTEM &quot;file://_definitely_doesnt_exist_asdfasdf&quot; &gt; ]&gt; &lt;root&gt; &lt;name&gt;&amp;xxe;&lt;/name&gt; [Redacted fields] &lt;/root&gt; After uploading the crafted file, an error was printed within a field that would have been populated by the XML node field, proving my XXE payload had triggered and was returning data. The error was a ‘File Not Found’ error and included the whole file-path to the current location. Ultimately this information leak provided me with the following information: I was targeting a Linux environment I had an XXE vulnerability to leverage I effectively had RCE With these 3 points I was able to start leaking sensitive files such as /etc/passwd, configuration files and source code that would only normally be utilised by the server to help potentially find other weaknesses and issues within the target. What came next? I crafted a short python script that performed the XXE vulnerable request over and over again. Each iteration attempted to obtain a different file from a dictionary I provided. Ultimately, I had created a brute force tool, similar to “dirbuster”, but specifically for enumerating the internal files and directories of my target. Using this quick tool lead to leaking the AWS secret keys… game over \\o/ The use of this tool probably wasn’t the most efficient approach, but it worked in this case. However, this accompanied by a ‘Billion Laughs’ attack lead to some issues for the client’s environment. Great news for the report though ;)","author":{"@type":"Person","name":"Crawl3r"},"@type":"BlogPosting","url":"http://localhost:4000/2018-11-11/first_wild_xxe","headline":"My first XXE in the wild","dateModified":"2018-11-11T00:00:00+00:00","datePublished":"2018-11-11T00:00:00+00:00","mainEntityOfPage":{"@type":"WebPage","@id":"http://localhost:4000/2018-11-11/first_wild_xxe"},"@context":"http://schema.org"}</script>
+<!-- End Jekyll SEO tag -->
+
+
+  <!-- CSS -->
+  <link rel="stylesheet" href="/assets/main.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Libre+Baskerville:400,400i,700">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png">
+
+  <!-- RSS -->
+  <link type="application/atom+xml" rel="alternate" href="http://localhost:4000/feed.xml" title="Crawl3r" />
+
+</head>
+
+
+  <body>
+
+    <nav class="nav">
+  <div class="nav-container">
+    <a href="/">
+      <h2 class="nav-title">Crawl3r</h2>
+    </a>
+    
+    <ul>
+      <li><a href="/about">About</a></li>
+      <li><a href="/">Posts</a></li>
+    </ul>
+  </div>
+</nav>
+
+
+    <main>
+      <div class="post">
+  <div class="post-info">
+    <span>Written by</span>
+    
+        Crawl3r
+    
+
+    
+      <br>
+      <span>on&nbsp;</span><time datetime="2018-11-11 00:00:00 +0000">November 11, 2018</time>
+    
+  </div>
+
+  <h1 class="post-title">My first XXE in the wild</h1>
+  <div class="post-line"></div>
+
+  <p><em>Disclaimer: This information was found during a pen-test on a client. For that reason, my explanations and examples will be very vague and contain no sensitive information relative to the target but it will be kept close to the actual finding.</em></p>
+
+<p>If you’re not sure what XXE is, please refer to OWASP’s wiki page.</p>
+
+<hr />
+
+<h2 id="initial-finding">Initial finding</h2>
+
+<p>Whilst enumerating the target web app, various features were found that allowed authenticated users to upload their own data. An example of an XML template was obtainable via a download and presented the correct method of including custom data that the application could parse. As soon as I saw that XML was usable I started crafting small payloads just to test for XXE vulnerabilities.</p>
+
+<p>I initially tried to read a file with a name that definitely wouldn’t exist to see if I could leak any information about the target environment.</p>
+
+<p>The redacted XML file I used was:</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">&lt;?xml version="1.0" encoding="ISO-8859-1"?&gt;</span>
+  <span class="cp">&lt;!DOCTYPE file [  
+   &lt;!ELEMENT file ANY &gt;</span>
+    <span class="cp">&lt;!ENTITY xxe SYSTEM "file://_definitely_doesnt_exist_asdfasdf" &gt;</span>
+  ]&gt;
+  <span class="nt">&lt;root&gt;</span>
+    <span class="nt">&lt;name&gt;</span><span class="ni">&amp;xxe;</span><span class="nt">&lt;/name&gt;</span>
+    [Redacted fields]
+  <span class="nt">&lt;/root&gt;</span> 
+</code></pre></div></div>
+
+<p>After uploading the crafted file, an error was printed within a field that would have been populated by the XML node field, proving my XXE payload had triggered and was returning data. The error was a ‘File Not Found’ error and included the whole file-path to the current location. Ultimately this information leak provided me with the following information:</p>
+
+<ul>
+  <li>I was targeting a Linux environment</li>
+  <li>I had an XXE vulnerability to leverage</li>
+  <li>I effectively had RCE</li>
+</ul>
+
+<p>With these 3 points I was able to start leaking sensitive files such as /etc/passwd, configuration files and source code that would only normally be utilised by the server to help potentially find other weaknesses and issues within the target.</p>
+
+<p>What came next?
+I crafted a short python script that performed the XXE vulnerable request over and over again. Each iteration attempted to obtain a different file from a dictionary I provided. Ultimately, I had created a brute force tool, similar to “dirbuster”, but specifically for enumerating the internal files and directories of my target. Using this quick tool lead to leaking the AWS secret keys… game over \o/</p>
+
+<p>The use of this tool probably wasn’t the most efficient approach, but it worked in this case. However, this accompanied by a ‘Billion Laughs’ attack lead to some issues for the client’s environment. Great news for the report though ;)</p>
+
+</div>
+
+<div class="pagination">
+  
+    <a href="/2019-02-24/basic_heap_overflow" class="left arrow">&#8592;</a>
+  
+  
+    <a href="/2018-06-01/my_go_to_port_scan" class="right arrow">&#8594;</a>
+  
+
+  <a href="#" class="top">Top</a>
+</div>
+    </main>
+
+    <footer>
+  <span>
+    &copy; <time datetime="2020-01-07 21:39:26 +0000">2020</time> Crawl3r. Made with Jekyll using the <a href="https://github.com/chesterhow/tale/">Tale</a> theme.
+  </span>
+</footer>
+
+  </body>
+</html>
