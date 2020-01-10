@@ -91,7 +91,7 @@ From this we can identify the required steps in assembly from a pseudo code pers
 
 Each one of these steps seems pretty simple to implement in assembly using ‘mov’ to place the correct values in the registers and ‘int 0x80’ to execute the syscall. The only information missing are the actual values for AF_INET and SOCK_STREAM, in C these are already defined with their integer values however, here we need the raw integer value.
 
-The easiest way to get these values would have been to ask my good friend Google. He seems pretty knowledgable but instead I thought I might as well utilise the C types and dump their raw value.
+The easiest way to get these values would have been to ask my good friend Google. He seems pretty knowledgeable but instead I thought I might as well utilise the C types and dump their raw value.
 
 ```
 #include <stdio.h>
