@@ -158,7 +158,7 @@ We can safely keep track of this value by storing it in a register we are unlike
 
 Whilst writing this, I was following the execution in gdb - confirming the registers were working the way I wanted them too and the correct call was being made. Once confirmed, it was time to move on to the next syscall - bind().
 
-Compared to the socket() system call, the bind() call requires quite a few more instructions to function correctly, including setting up the registers and pushing data onto the stack in the correct order, allowing to gain an address to use as a parameter. Looking at the C implementation of bind(), we can see 2 main sections of code include the creation of the 'server_addr struct’ and the call to bind() itself.
+Compared to the socket() system call, the bind() call requires quite a few more instructions to function correctly, including setting up the registers and pushing data onto the stack in the correct order, allowing us to obtain an address to use as a parameter. Looking at the C implementation of bind(), we can see 2 main sections of code include the creation of the 'server_addr struct’ and the call to bind() itself.
 
 ```
 struct sockaddr_in server_addr;
@@ -220,7 +220,7 @@ struct sockaddr_in {
 So now we know that the data we need to structure within our assembly is the following:
 * AF_INET (2)
 * The port number (I used 9001 - 0x2329)
-* The address (0.0.0.0 as we are locally binding)
+* The IP ddress (0.0.0.0 as we are locally binding)
 * 0
 
 The address of this data structure needs to be placed in the 2nd parameter (ECX), luckily the ESP currently points to this data. We need to remember that the port number is of type string, and therefore should be pushed onto the stack as a “word”. With the final addition of the size being placed into the 3rd parameter (EDX), the bind system call is ready to be executed.
@@ -233,8 +233,8 @@ mov ebx, edi          ; move fd (edi val) into ebx - param 1
 
 ; create our sockaddr struct in memory, used with bind() call, 2nd param
 xor ecx, ecx
-push ecx              ; 0
-push ecx              ; Address (0.0.0.0)
+push ecx              ;  0
+push ecx              ;  Local Address (0.0.0.0)
 push word 0x2923      ;  port number (9001)
 push word 0x2         ;  AF_INET
 
@@ -408,7 +408,7 @@ _start:
     ; create our sockaddr struct in memory, used with bind() call, 2nd param
     xor ecx, ecx      ; zero out ecx
     push ecx          ; push the 0 onto the stack (4th struct value)
-    push ecx          ; push the 0 onto the stack (Address)
+    push ecx          ; push the 0 onto the stack (IP Address)
     push word 0x2923  ; push the port onto stack  (0x2329) (PORT NUM = 9001) 
     push word 0x2     ; push 2 onto the stack     (AF_INET)
 
@@ -507,7 +507,7 @@ syscall_0xffffff3f(0xffffffda, 0, 0, 0, 0xffffffda, 0) = -1 ENOSYS (Function not
 execve("//bin/sh", [], 0xbf992980 /* 0 vars */) = 0
 ```
 
-For example, we can see that our hex value used for a system call (0x016c) exists, however the actual value it is attempting to call is 0xffff016b. This is because we only wrote to the lower half of the register using al, leaving anything already in the higher half of the address. After noticing this, I returned to XOR'ing most of the registers before moving values into them. Especially if I was targetting the lower half (al), to ensure the rest of the memory was zeroed.
+For example, we can see that our hex value used for a system call (0x016c) exists, however the actual value it is attempting to call is 0xffff016b. This is because we only wrote to the lower half of the register using al, leaving anything already in the higher half of the register. After noticing this, I returned to XOR'ing most of the registers before moving values into them. Especially if I was targetting the lower half (al), to ensure the rest of the memory was zeroed.
 
 * removed the 3 separate dup2 chunks and instead added a decrementing loop, using the value of the counter as the 2nd parameter value in ECX. Each iteration would decrement the ECX value down to 0 and check the current value before continuing the loop. If our value was not 0, we would jump back to the beginning of the loop and repeat our previous steps. If our value was 0, we have succesfully called dup2 three seperate times with the 2, 1 and 0 values in the 2nd parameter (ECX) and can safely exit the loop.
 * when using a register to move values into them, use the lower half of the register only
