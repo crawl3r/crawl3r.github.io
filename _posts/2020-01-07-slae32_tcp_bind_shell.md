@@ -627,7 +627,7 @@ root@kali:~/Documents/slae32/exercise_1/second_bind_shell# ../../misc/dump_hex.s
 
 As the above output shows, I have successfully tweaked my initial bind shell script to remove all null bytes during the second draft of the shell. The output also includes two \'s because the actual value, allowing direct usage within a python string. We need the two back slash characters to ensure a single \ remains in the final output.
 
-## Custom port number:
+## Wrapper to allow custom port number:
 The issue with this shell at the moment, is the static port value used within the defined struct. In order to change the port number we currently need to either open the .asm file, tweak the hex number that is pushed onto the stack and rebuild the shell or remember which hex values in the entire hex string above reference the port.
 
 The more logical solution would be to create a little tool, or wrapper, that takes a user defined integer value, converts this value to hex and then replaces the current port number value before dumping the hex to the screen for use.
