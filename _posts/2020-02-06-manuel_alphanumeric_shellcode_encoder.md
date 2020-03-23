@@ -134,7 +134,7 @@ Let's look at two chunks of shellcode that has been encoded and formatted by Man
 \x25\x35\x32\x31\x2a => and eax, 0x2a313235
 \x05\x06\x67\x40\x50 => add eax, 0x50406706
 \x05\x05\x66\x40\x40 => add eax, 0x40406605
-\x50 => push eax
+\x50                 => push eax
 ```
 
 The second chunk of shellcode follows the ADD ADD ADD SUB encoder, using three generated hex values and the hardcoded subtraction value:
@@ -148,7 +148,7 @@ The second chunk of shellcode follows the ADD ADD ADD SUB encoder, using three g
 \x05\x34\x26\x32\x34 => add eax, 0x34322634
 \x05\x33\x16\x31\x34 => add eax, 0x34311633
 \x2d\x33\x33\x33\x33 => sub eax, 0x33333333
-\x50 => push eax
+\x50                 => push eax
 ```
 
 So, the good news is - we now know how to encode our shellcode into ASCII friendly bytes, preventing manipulation and incorrect injection results. However, the bad news is, we can't execute this shellcode in a similar fashion to the standard (non-encoded shellcode). We need additional instructions to re-align the stack and point execution towards our decoded shellcode. However, this post will not cover that as I personally have not covered that yet... soon.
