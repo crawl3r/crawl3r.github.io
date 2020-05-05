@@ -21,8 +21,8 @@ Our initial use of the program identified the following:
 
 ```
 $ ./stack0
-	test
-	Try again?
+test
+Try again?
 ```
 
 The program simply appears to take input as it's first action, presumably does something with it in the background and then prints some output based on the value that was specified. In this case, the binary took the word 'test' as input, and printed 'Try again?'.
