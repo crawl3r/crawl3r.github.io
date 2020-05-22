@@ -471,6 +471,7 @@ By running our output, we can observe the difference between the output of AMSI 
 We can see what's happening within memory with windbg. We want to open powershell and load the DLL. Before running the Bypass, we attach to the process and disassemble the "AmsiScanBuffer" function:
 
 ```
+0:012> u amsi!amsiScanBuffer l10
 amsi!AmsiScanBuffer:
 00007ff8`cc652540 4c8bdc          mov     r11,rsp
 00007ff8`cc652543 49895b08        mov     qword ptr [r11+8],rbx
