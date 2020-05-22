@@ -468,6 +468,53 @@ By running our output, we can observe the difference between the output of AMSI 
 
 ![AMSI patch, before and after]({{ site.url }}/assets/images/amsi_bypass/3_bypassed_result.png)
 
+We can see what's happening within memory with windbg. We want to open powershell and load the DLL. Before running the Bypass, we attach to the process and disassemble the "AmsiScanBuffer" function:
+
+```
+amsi!AmsiScanBuffer:
+00007ff8`cc652540 4c8bdc          mov     r11,rsp
+00007ff8`cc652543 49895b08        mov     qword ptr [r11+8],rbx
+00007ff8`cc652547 49896b10        mov     qword ptr [r11+10h],rbp
+00007ff8`cc65254b 49897318        mov     qword ptr [r11+18h],rsi
+00007ff8`cc65254f 57              push    rdi
+00007ff8`cc652550 4156            push    r14
+00007ff8`cc652552 4157            push    r15
+00007ff8`cc652554 4883ec70        sub     rsp,70h
+00007ff8`cc652558 4d8bf9          mov     r15,r9
+00007ff8`cc65255b 418bf8          mov     edi,r8d
+00007ff8`cc65255e 488bf2          mov     rsi,rdx
+00007ff8`cc652561 488bd9          mov     rbx,rcx
+00007ff8`cc652564 488b0dadda0000  mov     rcx,qword ptr [amsi!WPP_GLOBAL_Control (00007ff8`cc660018)]
+00007ff8`cc65256b 488d05a6da0000  lea     rax,[amsi!WPP_GLOBAL_Control (00007ff8`cc660018)]
+00007ff8`cc652572 488bac24b8000000 mov     rbp,qword ptr [rsp+0B8h]
+00007ff8`cc65257a 4c8bb424b0000000 mov     r14,qword ptr [rsp+0B0h]
+```
+
+As we can see, the function does a number of things, but based on our bypass - we don't really care. We just need to stop it doing it. So now let's continue the process (windbg would have paused it when attaching).
+
+Next we run the bypass with "[Amsi]::Bypass()" and break the process again in windbg. Now the bypass has been run and the patch applied, we can see that the first byte has been turned into a ret instruction. Resulting in us breaking out of the function immediately everytime it is called:
+
+```
+0:012> u amsi!amsiScanBuffer l10
+amsi!AmsiScanBuffer:
+00007ff8`cc652540 c3              ret
+00007ff8`cc652541 8bdc            mov     ebx,esp
+00007ff8`cc652543 49895b08        mov     qword ptr [r11+8],rbx
+00007ff8`cc652547 49896b10        mov     qword ptr [r11+10h],rbp
+00007ff8`cc65254b 49897318        mov     qword ptr [r11+18h],rsi
+00007ff8`cc65254f 57              push    rdi
+00007ff8`cc652550 4156            push    r14
+00007ff8`cc652552 4157            push    r15
+00007ff8`cc652554 4883ec70        sub     rsp,70h
+00007ff8`cc652558 4d8bf9          mov     r15,r9
+00007ff8`cc65255b 418bf8          mov     edi,r8d
+00007ff8`cc65255e 488bf2          mov     rsi,rdx
+00007ff8`cc652561 488bd9          mov     rbx,rcx
+00007ff8`cc652564 488b0dadda0000  mov     rcx,qword ptr [amsi!WPP_GLOBAL_Control (00007ff8`cc660018)]
+00007ff8`cc65256b 488d05a6da0000  lea     rax,[amsi!WPP_GLOBAL_Control (00007ff8`cc660018)]
+00007ff8`cc652572 488bac24b8000000 mov     rbp,qword ptr [rsp+0B8h]
+```
+
 ## Future work? 
 
 Continue messing with AMSI and finding ways to make sure my PS shells are useful. Personally, I like working with AMSI and Defender. The work might not by the smartest, or the trickiest stuff in the world, but it's fun and a lot of people use them on their systems. I might as well learn about something current, huh? Enjoy your AMSI-less times!
