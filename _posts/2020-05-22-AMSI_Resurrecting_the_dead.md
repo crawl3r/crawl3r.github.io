@@ -9,6 +9,10 @@ title: "AMSI - Resurrecting the Dead"
 
 ---
 
+### TLDR;
+
+Code here -> https://github.com/crawl3r/FunWithAMSI
+
 ## Introduction
 
 We all know that AMSI can be a pain sometimes. We just want to get our beacon running, pop some dodgy code, abuse something that Windows doesn't like, whatever it may be. But who is right there, waiting to ruin our fun... that's right, good old AMSI.
